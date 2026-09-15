@@ -189,8 +189,8 @@ def test_graph_access_token_tries_fallback_endpoint(monkeypatch):
 
     assert pool._graph_access_token(entry) == "access-token-ok"
     assert len(calls) == 2
-    assert calls[0][0] == "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-    assert calls[1][0] == "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+    assert calls[0][0] == "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+    assert calls[1][0] == "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 
 
 def test_graph_invalid_grant_disables_parent_mailbox(monkeypatch):

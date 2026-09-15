@@ -23,9 +23,100 @@ def _decode_text(payload: bytes, filename: str) -> str:
     raise HTTPException(400, f"TXT 文件编码无法识别: {filename}")
 
 
+from pydantic import BaseModel, Field
+
+
+class BatchTestMailboxesRequest(BaseModel):
+    emails: list[str] = Field(default_factory=list)
+    concurrency: int = Field(default=10, ge=1, le=30)
+
+
 @router.get("/stats")
 def mailbox_stats():
     return repository.stats()
+
+
+@router.post("/batch-test")
+async def batch_test_mailboxes(body: BatchTestMailboxesRequest | None = None):
+    req = body or BatchTestMailboxesRequest()
+    concurrency = min(max(req.concurrency, 1), 30)
+    records = await run_in_threadpool(
+        repository.list_for_testing,
+        req.emails if req.emails else None,
+    )
+    if not records:
+        return {
+            "ok": True,
+            "tested": 0,
+            "valid": 0,
+            "invalid": 0,
+            "results": {},
+            "stats": repository.stats(),
+        }
+
+    pool = LocalMicrosoftMailboxPool()
+
+    def _test_single(record) -> tuple[str, bool, str]:
+        entry = pool._entry_from_record(record)
+        if entry.graph_ready:
+            try:
+                token = pool._graph_access_token(entry)
+                if not token:
+                    return (record.email, False, "无法获取 Graph Access Token")
+                return (record.email, True, "Graph 授权有效")
+            except Exception as exc:
+                return (record.email, False, str(exc)[:200])
+        elif entry.imap_ready:
+            try:
+                conn = pool._imap_connect(entry)
+                try:
+                    conn.login(entry.login_account or entry.email, entry.password)
+                    return (record.email, True, "IMAP 验证成功")
+                finally:
+                    try:
+                        conn.logout()
+                    except Exception:
+                        pass
+            except Exception as exc:
+                return (record.email, False, f"IMAP 连接失败: {str(exc)[:150]}")
+        else:
+            return (record.email, False, "未配置 Graph 或 IMAP 凭据")
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _run_all():
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            return list(executor.map(_test_single, records))
+
+    raw_results = await run_in_threadpool(_run_all)
+    results: dict[str, dict] = {}
+    valid_count = 0
+    invalid_count = 0
+    for email, ok, message in raw_results:
+        results[email] = {"ok": ok, "message": message}
+        if ok:
+            valid_count += 1
+        else:
+            invalid_count += 1
+
+    return {
+        "ok": True,
+        "tested": len(records),
+        "valid": valid_count,
+        "invalid": invalid_count,
+        "results": results,
+        "stats": repository.stats(),
+    }
+
+
+@router.post("/clear-disabled")
+async def clear_disabled_mailboxes():
+    deleted = await run_in_threadpool(repository.delete_disabled)
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "stats": repository.stats(),
+    }
 
 
 @router.get("/{email}/messages")
@@ -137,3 +228,60 @@ async def import_mailboxes(files: list[UploadFile] = File(...)):
         "duplicates_in_upload": max(parsed_rows - len(entries_by_email), 0),
         **result,
     }
+
+
+class MailboxImportTextRequest(BaseModel):
+    text: str
+
+
+@router.post("/import-text")
+async def import_mailboxes_text(body: MailboxImportTextRequest):
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "请输入邮箱卡密内容")
+    parsed = parse_local_ms_pool_rows(text)
+    if not parsed:
+        raise HTTPException(400, "没有解析到有效的微软邮箱")
+    result = await run_in_threadpool(
+        repository.import_entries,
+        parsed,
+        max_uses=6,
+    )
+    return {
+        "ok": True,
+        "parsed": len(parsed),
+        **result,
+    }
+
+
+@router.post("/{email:path}/test")
+async def test_mailbox(email: str):
+    import urllib.parse
+
+    decoded = urllib.parse.unquote(email).strip().lower()
+    pool = LocalMicrosoftMailboxPool()
+    parent_key = pool._parent_email_key(decoded)
+    record = await run_in_threadpool(repository.get_by_parent_email, parent_key)
+    if not record:
+        raise HTTPException(404, f"未找到邮箱 {decoded}")
+    entry = pool._entry_from_record(record)
+    if not entry.graph_ready:
+        return {"ok": False, "email": decoded, "error": "该邮箱未配置 Graph client_id 与 refresh_token"}
+    try:
+        token = await run_in_threadpool(pool._graph_access_token, entry)
+        if not token:
+            return {"ok": False, "email": decoded, "error": "无法获取 Graph Access Token"}
+        return {"ok": True, "email": decoded, "message": "微软 Graph 授权正常有效"}
+    except Exception as exc:
+        return {"ok": False, "email": decoded, "error": str(exc)[:200]}
+
+
+@router.delete("/{email:path}")
+def delete_mailbox(email: str):
+    import urllib.parse
+
+    decoded = urllib.parse.unquote(email).strip().lower()
+    ok = repository.delete_by_email(decoded)
+    if not ok:
+        raise HTTPException(404, "邮箱不存在或删除失败")
+    return {"ok": True, "email": decoded}

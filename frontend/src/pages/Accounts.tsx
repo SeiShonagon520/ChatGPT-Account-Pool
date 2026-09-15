@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, Copy, KeyRound, Plus, RefreshCw, ShieldCheck, X } from 'lucide-react'
+import { CheckCircle2, CheckSquare, ChevronLeft, ChevronRight, Copy, Download, Mail, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { apiFetch } from '@/lib/utils'
+import { apiDownload, apiFetch, apiForm, triggerBrowserDownload } from '@/lib/utils'
 
 type AccountListItem = {
   id: number
@@ -13,6 +13,10 @@ type AccountListItem = {
   totp_secret: string
   refresh_token_status: string
   has_refresh_token: boolean
+  at_expires_at?: number | null
+  has_mailbox?: boolean
+  mailbox_email?: string
+  plan_name?: string
   created_at: string | null
 }
 
@@ -73,6 +77,24 @@ function statePill(value: string) {
       ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
       : 'border-[var(--border)] bg-[var(--bg-pane)] text-[var(--text-muted)]'
   return <span className={`inline-flex min-w-8 justify-center rounded-full border px-2 py-0.5 text-xs ${styles}`}>{label}</span>
+}
+
+function formatAtExpiry(exp?: number | null) {
+  if (!exp) return null
+  const now = Math.floor(Date.now() / 1000)
+  const diff = exp - now
+  if (diff <= 0) {
+    return <span className="inline-flex items-center gap-1 rounded bg-red-500/10 px-1.5 py-0.5 text-[11px] text-red-400 font-mono" title={new Date(exp * 1000).toLocaleString()}>AT已过期</span>
+  }
+  const days = Math.floor(diff / 86400)
+  const hours = Math.floor((diff % 86400) / 3600)
+  if (days >= 2) {
+    return <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-400 font-mono" title={new Date(exp * 1000).toLocaleString()}>AT剩 {days}天</span>
+  }
+  if (days >= 1) {
+    return <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[11px] text-amber-400 font-mono" title={new Date(exp * 1000).toLocaleString()}>AT剩 1天{hours}时</span>
+  }
+  return <span className="inline-flex items-center gap-1 rounded bg-rose-500/10 px-1.5 py-0.5 text-[11px] text-rose-400 font-mono" title={new Date(exp * 1000).toLocaleString()}>AT剩 {hours}时</span>
 }
 
 function RegisterDialog({ onClose, onCreated }: { onClose: () => void, onCreated: (task: CreatedTask) => void }) {
@@ -353,6 +375,317 @@ function RegisterDialog({ onClose, onCreated }: { onClose: () => void, onCreated
   )
 }
 
+function ImportAccountsDialog({
+  onClose,
+  onSuccess,
+  proxyNodes,
+}: {
+  onClose: () => void
+  onSuccess: (task?: CreatedTask) => void
+  proxyNodes: ProxyNode[]
+}) {
+  const [inputMode, setInputMode] = useState<'text' | 'file'>('text')
+  const [text, setText] = useState('')
+  const [file, setFile] = useState<File | null>(null)
+  const [fileName, setFileName] = useState('')
+  const [autoCheck, setAutoCheck] = useState(false)
+  const [concurrency, setConcurrency] = useState('50')
+  const [proxyNode, setProxyNode] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState<{
+    ok: boolean
+    received: number
+    parsed: number
+    created: number
+    updated: number
+    mailboxes_saved: number
+    failed: number
+    task?: { task_id?: string }
+  } | null>(null)
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0]
+    if (selected) {
+      setFile(selected)
+      setFileName(selected.name)
+      setError('')
+    }
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    const dropped = e.dataTransfer.files?.[0]
+    if (dropped) {
+      setFile(dropped)
+      setFileName(dropped.name)
+      setError('')
+    }
+  }
+
+  const textLinesCount = text.split('\n').filter(line => {
+    const trimmed = line.trim()
+    return trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('//')
+  }).length
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    setError('')
+    setSubmitting(true)
+    try {
+      let data: any
+      if (inputMode === 'file') {
+        if (!file) {
+          setError('请先选择或拖入 TXT 文件')
+          setSubmitting(false)
+          return
+        }
+        const formData = new FormData()
+        formData.append('file', file)
+        formData.append('platform', 'chatgpt')
+        formData.append('auto_check', String(autoCheck))
+        formData.append('concurrency', concurrency)
+        if (proxyNode) formData.append('proxy_node', proxyNode)
+
+        data = await apiForm('/accounts/import-file', formData)
+      } else {
+        if (!text.trim()) {
+          setError('请在文本框中输入或粘贴账号卡密')
+          setSubmitting(false)
+          return
+        }
+        data = await apiFetch('/accounts/import', {
+          method: 'POST',
+          body: JSON.stringify({
+            platform: 'chatgpt',
+            text: text,
+            auto_check: autoCheck,
+            concurrency: Number(concurrency),
+            proxy_node: proxyNode || null,
+          }),
+        })
+      }
+
+      setResult(data)
+    } catch (err: any) {
+      setError(err?.message || '导入失败，请检查文件格式')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleDone = () => {
+    let createdTask: CreatedTask | undefined
+    if (result?.task?.task_id) {
+      createdTask = {
+        id: result.task.task_id,
+        title: `导入后 401 自动验活任务已创建（${concurrency} 并发）`,
+      }
+    }
+    onSuccess(createdTask)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="max-h-[calc(100vh-2rem)] w-full max-w-xl overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-xl">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold text-[var(--text-primary)]">导入 ChatGPT 账号</h2>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              支持直接粘贴或上传卡密 TXT，自动识别微软长效邮箱、2FA 密钥并完成持久化绑定。
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {result ? (
+          <div className="mt-5 space-y-4">
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-emerald-300">
+              <div className="text-sm font-semibold">🎉 导入处理完成</div>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                <div className="rounded bg-black/20 p-2">
+                  <div className="text-[var(--text-muted)]">解析行数</div>
+                  <div className="mt-1 text-lg font-bold text-[var(--text-primary)]">{result.parsed}</div>
+                </div>
+                <div className="rounded bg-black/20 p-2">
+                  <div className="text-[var(--text-muted)]">新添账号</div>
+                  <div className="mt-1 text-lg font-bold text-emerald-400">+{result.created}</div>
+                </div>
+                <div className="rounded bg-black/20 p-2">
+                  <div className="text-[var(--text-muted)]">更新已有</div>
+                  <div className="mt-1 text-lg font-bold text-amber-400">{result.updated}</div>
+                </div>
+                <div className="rounded bg-black/20 p-2">
+                  <div className="text-[var(--text-muted)]">绑定长效邮箱</div>
+                  <div className="mt-1 text-lg font-bold text-sky-400">{result.mailboxes_saved}</div>
+                </div>
+              </div>
+              {result.failed > 0 ? (
+                <p className="mt-2 text-xs text-red-400">注意：有 {result.failed} 行格式解析或写入失败，请检查源数据。</p>
+              ) : null}
+              {result.task?.task_id ? (
+                <p className="mt-2 text-xs text-emerald-300">已自动触发后台验活任务，可在任务页面查看进度。</p>
+              ) : null}
+            </div>
+            <div className="flex justify-end">
+              <Button type="button" onClick={handleDone}>完成并刷新列表</Button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="mt-5 space-y-4">
+            <div className="flex border-b border-[var(--border)] text-sm">
+              <button
+                type="button"
+                onClick={() => setInputMode('text')}
+                className={`pb-2 font-medium transition-colors ${
+                  inputMode === 'text'
+                    ? 'border-b-2 border-sky-500 text-sky-400'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                ✏️ 文本粘贴
+              </button>
+              <button
+                type="button"
+                onClick={() => setInputMode('file')}
+                className={`ml-6 pb-2 font-medium transition-colors ${
+                  inputMode === 'file'
+                    ? 'border-b-2 border-sky-500 text-sky-400'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                📄 文件上传 (.txt)
+              </button>
+            </div>
+
+            {inputMode === 'text' ? (
+              <div>
+                <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                  <span>卡密格式：每行一个账号</span>
+                  <span>有效行数：{textLinesCount}</span>
+                </div>
+                <textarea
+                  value={text}
+                  onChange={e => setText(e.target.value)}
+                  placeholder={`支持如下常见格式（自动识别 ----、制表符、逗号、冒号）：\n\n邮箱----密码----client_id----refresh_token（自动绑定微软长效邮箱）\n邮箱----密码----2FA密钥（自动绑定 TOTP）\n邮箱----密码`}
+                  rows={8}
+                  className="mt-1.5 w-full rounded-md border border-[var(--border)] bg-transparent p-3 font-mono text-xs text-[var(--text-primary)] focus:border-sky-500 focus:outline-none"
+                />
+              </div>
+            ) : (
+              <div>
+                <div
+                  onDragOver={e => e.preventDefault()}
+                  onDrop={handleDrop}
+                  className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-[var(--border)] bg-[var(--bg-pane)]/30 p-6 text-center hover:border-sky-500/50"
+                >
+                  <Upload className="h-8 w-8 text-[var(--text-muted)]" />
+                  <p className="mt-2 text-sm text-[var(--text-primary)]">
+                    {fileName ? (
+                      <span className="font-semibold text-emerald-400">{fileName}</span>
+                    ) : (
+                      '拖拽 .txt 文件到此处，或点击浏览上传'
+                    )}
+                  </p>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">支持标准文本或卡密导出文件（最大 10MB）</p>
+                  <label className="mt-3 cursor-pointer">
+                    <span className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--bg-hover)]">
+                      选择文件
+                    </span>
+                    <input
+                      type="file"
+                      accept=".txt,.csv"
+                      onChange={handleFileChange}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-md border border-[var(--border)] bg-[var(--bg-pane)]/20 p-3 text-xs text-[var(--text-muted)]">
+              <div className="font-medium text-[var(--text-secondary)]">💡 格式说明：</div>
+              <ul className="mt-1 list-inside list-disc space-y-0.5">
+                <li><span className="text-sky-400">微软长效卡密</span>：<code>邮箱----密码----client_id----refresh_token</code>（持久化保存，免密码无限刷新收信）</li>
+                <li><span className="text-emerald-400">2FA 账号</span>：<code>邮箱----密码----totp_secret</code></li>
+                <li><span className="text-amber-400">普通账号</span>：<code>邮箱----密码</code></li>
+              </ul>
+            </div>
+
+            <div className="rounded-md border border-[var(--border)] bg-[var(--bg-pane)]/20 p-3 space-y-3">
+              <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoCheck}
+                  onChange={e => setAutoCheck(e.target.checked)}
+                  className="rounded border-[var(--border)] text-sky-500"
+                />
+                <span>导入成功后立即执行 401 验活</span>
+              </label>
+
+              {autoCheck ? (
+                <div className="grid gap-3 pt-2 sm:grid-cols-2 border-t border-[var(--border)]/50">
+                  <label className="grid gap-1 text-xs text-[var(--text-muted)]">
+                    验活代理节点
+                    <select
+                      value={proxyNode}
+                      onChange={e => setProxyNode(e.target.value)}
+                      className="rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-xs text-[var(--text-primary)]"
+                    >
+                      <option value="">自动</option>
+                      {proxyNodes.map(node => (
+                        <option key={node.name} value={node.name} disabled={node.alive === false}>
+                          {node.name} · {node.delay ? `${node.delay}ms` : '未测速'}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="grid gap-1 text-xs text-[var(--text-muted)]">
+                    验活并发数
+                    <select
+                      value={concurrency}
+                      onChange={e => setConcurrency(e.target.value)}
+                      className="rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-xs text-[var(--text-primary)]"
+                    >
+                      <option value="20">并发 20</option>
+                      <option value="50">并发 50</option>
+                      <option value="100">并发 100</option>
+                    </select>
+                  </label>
+                </div>
+              ) : null}
+            </div>
+
+            {error ? (
+              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                {error}
+              </div>
+            ) : null}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={onClose}>
+                取消
+              </Button>
+              <Button
+                type="submit"
+                disabled={submitting || (inputMode === 'text' ? !text.trim() : !file)}
+              >
+                {submitting ? '导入中…' : '开始导入'}
+              </Button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function Accounts() {
   const navigate = useNavigate()
   const [accounts, setAccounts] = useState<AccountListItem[]>([])
@@ -362,14 +695,23 @@ export default function Accounts() {
   const [pageSize, setPageSize] = useState(20)
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [hasRefreshTokenOnly, setHasRefreshTokenOnly] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<'all' | 'valid' | 'invalid' | 'has_mailbox' | 'has_rt'>('all')
+  const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const [batchActionLoading, setBatchActionLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [showRegister, setShowRegister] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [runningAction, setRunningAction] = useState('')
   const [maintenanceConcurrency, setMaintenanceConcurrency] = useState('100')
   const [maintenanceProxyNode, setMaintenanceProxyNode] = useState('')
   const [maintenanceProxyNodes, setMaintenanceProxyNodes] = useState<ProxyNode[]>([])
   const [createdTask, setCreatedTask] = useState<CreatedTask | null>(null)
+  const [taskNotice, setTaskNotice] = useState('')
+  const [completedRecovery, setCompletedRecovery] = useState<{
+    taskId: string
+    recoveredCount: number
+    recoveredEmails: string[]
+  } | null>(null)
   const [error, setError] = useState('')
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
@@ -383,13 +725,20 @@ export default function Accounts() {
         page_size: String(pageSize),
       })
       if (debouncedSearch.trim()) params.set('email', debouncedSearch.trim())
-      if (hasRefreshTokenOnly) params.set('has_refresh_token', 'true')
+      const hasRefreshTokenOnly = statusFilter === 'has_rt'
+      if (statusFilter !== 'all') {
+        params.set('status', statusFilter)
+        if (hasRefreshTokenOnly) {
+          params.set('has_refresh_token', 'true')
+        }
+      }
       const [data, stats] = await Promise.all([
         apiFetch(`/accounts?${params}`),
         apiFetch('/accounts/survival-stats?platform=chatgpt'),
       ])
       setAccounts(Array.isArray(data?.items) ? data.items : [])
       setTotal(Number(data?.total || 0))
+      setSelectedIds([])
       setSurvivalStats({
         platform: String(stats?.platform || 'chatgpt'),
         alive_accounts: Number(stats?.alive_accounts || 0),
@@ -402,14 +751,14 @@ export default function Accounts() {
     } finally {
       setLoading(false)
     }
-  }, [debouncedSearch, hasRefreshTokenOnly, page, pageSize])
+  }, [debouncedSearch, statusFilter, page, pageSize])
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search), 350)
     return () => window.clearTimeout(timer)
   }, [search])
 
-  useEffect(() => { setPage(1) }, [debouncedSearch, hasRefreshTokenOnly, pageSize])
+  useEffect(() => { setPage(1) }, [debouncedSearch, statusFilter, pageSize])
   useEffect(() => { void load() }, [load])
   useEffect(() => {
     void apiFetch('/proxy-nodes')
@@ -418,6 +767,59 @@ export default function Accounts() {
       })
       .catch(() => setMaintenanceProxyNodes([]))
   }, [])
+
+  const downloadRecoveredSub2Api = async (taskId: string) => {
+    try {
+      const { blob, filename } = await apiDownload(`/accounts/tasks/${taskId}/export-recovered-sub2api`)
+      triggerBrowserDownload(blob, filename)
+    } catch (err: any) {
+      setError(err?.message || '下载已恢复账号 Sub 文件失败')
+    }
+  }
+
+  // 监听验活/登录任务执行进度，完成后若有 401 恢复账号则自动触发下载并高亮提示
+  useEffect(() => {
+    if (!createdTask?.id) return
+    const taskId = createdTask.id
+    let cancelled = false
+
+    const checkTaskStatus = async () => {
+      try {
+        const taskInfo = await apiFetch(`/tasks/${taskId}`)
+        if (cancelled) return
+        if (taskInfo?.terminal) {
+          const recoveredCount = Number(taskInfo?.data?.recovered_count || 0)
+          const recoveredEmails = Array.isArray(taskInfo?.data?.recovered_emails) ? taskInfo.data.recovered_emails : []
+
+          if (recoveredCount > 0) {
+            setCompletedRecovery({
+              taskId,
+              recoveredCount,
+              recoveredEmails,
+            })
+            // 自动触发静默下载仅包含恢复账号的 Sub 格式 json 文件
+            void downloadRecoveredSub2Api(taskId)
+            setTaskNotice(`🎉 验活完成！成功解救 ${recoveredCount} 个 401 账号，已为您自动导出 Sub2API 文件。`)
+          } else {
+            setTaskNotice(`验活任务执行完毕，未发现可解救的 401 账号。`)
+          }
+          setCreatedTask(null)
+          void load()
+        }
+      } catch {
+        // ignore polling errors
+      }
+    }
+
+    const interval = window.setInterval(() => {
+      void checkTaskStatus()
+    }, 2000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [createdTask?.id, load])
 
   const createRefreshCheckTask = async (browser = true) => {
     setRunningAction(browser ? 'refresh_browser' : 'refresh')
@@ -446,6 +848,37 @@ export default function Accounts() {
   }
 
   const [copiedId, setCopiedId] = useState<number | null>(null)
+
+  const EXPORT_FORMATS: Array<{ value: string, label: string }> = [
+    { value: 'json', label: 'JSON' },
+    { value: 'csv', label: 'CSV' },
+    { value: 'sub2api', label: 'Sub2API' },
+    { value: 'sub2api-agent-identity', label: 'Sub2API Agent Identity' },
+    { value: 'cpa', label: 'CPA' },
+    { value: 'any2api', label: 'Any2API' },
+    { value: 'cockpit', label: 'Cockpit' },
+  ]
+  const [exportFormat, setExportFormat] = useState('json')
+  const [exporting, setExporting] = useState('')
+
+  const exportAccounts = async () => {
+    setExporting(exportFormat)
+    try {
+      const { blob, filename } = await apiDownload(`/accounts/export/${exportFormat}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          ids: [],
+          select_all: true,
+        }),
+      })
+      triggerBrowserDownload(blob, filename)
+    } catch (err: any) {
+      setError(err?.message || '导出失败')
+    } finally {
+      setExporting('')
+    }
+  }
 
   const copyAccount = async (account: AccountListItem) => {
     const lines = [account.email, account.password || '']
@@ -487,9 +920,111 @@ export default function Accounts() {
     }
   }
 
+  const [deletingId, setDeletingId] = useState<number | null>(null)
+  const deleteAccount = async (account: AccountListItem) => {
+    if (!window.confirm(`确定删除账号「${account.email}」？此操作不可撤销。`)) return
+    setDeletingId(account.id)
+    try {
+      await apiFetch(`/accounts/${account.id}`, { method: 'DELETE' })
+      await load()
+    } catch (err: any) {
+      setError(err?.message || '删除失败')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedIds.length === accounts.length && accounts.length > 0) {
+      setSelectedIds([])
+    } else {
+      setSelectedIds(accounts.map(a => a.id))
+    }
+  }
+
+  const toggleSelectOne = (id: number) => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+  }
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.length === 0) return
+    if (!window.confirm(`确定批量删除选中的 ${selectedIds.length} 个账号？此操作不可撤销！`)) return
+    setBatchActionLoading(true)
+    try {
+      await apiFetch('/accounts/batch-delete', {
+        method: 'POST',
+        body: JSON.stringify({ ids: selectedIds }),
+      })
+      setSelectedIds([])
+      await load()
+    } catch (err: any) {
+      setError(err?.message || '批量删除失败')
+    } finally {
+      setBatchActionLoading(false)
+    }
+  }
+
+  const handleBatchCheck = async () => {
+    if (selectedIds.length === 0) return
+    setBatchActionLoading(true)
+    try {
+      const task = await apiFetch('/accounts/check-refresh-tokens', {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          concurrency: Number(maintenanceConcurrency),
+          proxy_node: maintenanceProxyNode || null,
+          browser: true,
+          account_ids: selectedIds,
+        }),
+      })
+      setCreatedTask({
+        id: task.task_id,
+        title: `已为选中的 ${selectedIds.length} 个账号创建验活任务`,
+      })
+      setSelectedIds([])
+      await load()
+    } catch (err: any) {
+      setError(err?.message || '创建定向验活任务失败')
+    } finally {
+      setBatchActionLoading(false)
+    }
+  }
+
+  const handleBatchExport = async () => {
+    if (selectedIds.length === 0) return
+    setBatchActionLoading(true)
+    try {
+      const { blob, filename } = await apiDownload(`/accounts/export/${exportFormat}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          ids: selectedIds,
+          select_all: false,
+        }),
+      })
+      triggerBrowserDownload(blob, filename)
+    } catch (err: any) {
+      setError(err?.message || '批量导出失败')
+    } finally {
+      setBatchActionLoading(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       {showRegister ? <RegisterDialog onClose={() => setShowRegister(false)} onCreated={(task) => { setShowRegister(false); setCreatedTask(task) }} /> : null}
+      {showImport ? (
+        <ImportAccountsDialog
+          onClose={() => setShowImport(false)}
+          onSuccess={(task) => {
+            setShowImport(false)
+            if (task) setCreatedTask(task)
+            void load()
+          }}
+          proxyNodes={maintenanceProxyNodes}
+        />
+      ) : null}
       <Card className="border border-[var(--border)] bg-[var(--bg-pane)]/40 p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -530,6 +1065,26 @@ export default function Accounts() {
             <Button size="sm" onClick={() => setShowRegister(true)}>
               <Plus className="mr-1.5 h-4 w-4" />协议注册
             </Button>
+            <Button size="sm" variant="outline" onClick={() => setShowImport(true)} title="导入卡密 TXT 或粘贴账号">
+              <Upload className="mr-1.5 h-4 w-4" />导入账号
+            </Button>
+            <div className="flex items-center gap-2">
+              <select
+                value={exportFormat}
+                onChange={event => setExportFormat(event.target.value)}
+                disabled={Boolean(exporting)}
+                aria-label="导出格式"
+                className="rounded-md border border-[var(--border)] bg-transparent px-2 py-1.5 text-sm text-[var(--text-primary)] disabled:opacity-50"
+              >
+                {EXPORT_FORMATS.map(format => (
+                  <option key={format.value} value={format.value}>{format.label}</option>
+                ))}
+              </select>
+              <Button size="sm" variant="outline" disabled={Boolean(exporting)} onClick={() => void exportAccounts()} title="导出全部账号">
+                <Download className="mr-1.5 h-4 w-4" />
+                {exporting ? '导出中…' : '导出'}
+              </Button>
+            </div>
           </div>
         </div>
         <div className="mt-5 grid grid-cols-1 border-t border-[var(--border)] pt-4 sm:grid-cols-3">
@@ -548,8 +1103,51 @@ export default function Accounts() {
         </div>
         {createdTask ? (
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-200">
-            <span>{createdTask.title}：<span className="font-mono text-xs">{createdTask.id}</span></span>
-            <Button size="sm" variant="outline" onClick={() => navigate('/tasks')}>查看任务</Button>
+            <span className="flex items-center gap-2">
+              <RefreshCw className="h-4 w-4 animate-spin text-sky-400" />
+              <span>{createdTask.title}：<span className="font-mono text-xs">{createdTask.id}</span>（正在后台处理中，完成后将自动刷新…）</span>
+            </span>
+            <Button size="sm" variant="outline" onClick={() => navigate('/tasks')}>查看详情</Button>
+          </div>
+        ) : null}
+        {completedRecovery ? (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="h-5 w-5 text-emerald-400 shrink-0" />
+              <div>
+                <div className="font-medium text-emerald-200">
+                  🎉 验活完成！成功解救 {completedRecovery.recoveredCount} 个 401 账号已恢复有效状态
+                </div>
+                <div className="mt-0.5 text-xs text-emerald-400/90">
+                  受影响账号：{completedRecovery.recoveredEmails.join(', ')}（已自动触发下载 Sub2API 单文件导入格式）
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-emerald-500/40 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30 text-xs font-semibold"
+                onClick={() => void downloadRecoveredSub2Api(completedRecovery.taskId)}
+              >
+                <Download className="mr-1.5 h-3.5 w-3.5" />重新下载 Sub 格式
+              </Button>
+              <button
+                type="button"
+                onClick={() => setCompletedRecovery(null)}
+                className="rounded p-1 text-emerald-400 hover:bg-emerald-500/20"
+                title="关闭提示"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        ) : taskNotice ? (
+          <div className="mt-4 flex items-center justify-between rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
+            <span>{taskNotice}</span>
+            <button type="button" onClick={() => setTaskNotice('')} className="rounded p-0.5 text-sky-400 hover:bg-sky-500/20">
+              <X className="h-3.5 w-3.5" />
+            </button>
           </div>
         ) : null}
         {error ? <div className="mt-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">{error}</div> : null}
@@ -557,66 +1155,178 @@ export default function Accounts() {
 
       <Card className="overflow-hidden border border-[var(--border)] bg-[var(--bg-card)] p-0">
         <div className="flex flex-col gap-3 border-b border-[var(--border)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <input
-            value={search}
-            onChange={event => setSearch(event.target.value)}
-            placeholder="搜索账号"
-            className="w-full max-w-sm rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
-          />
-          <div className="flex items-center gap-2">
-            <Button
-              variant={hasRefreshTokenOnly ? 'default' : 'outline'}
-              size="sm"
-              className="whitespace-nowrap"
-              aria-pressed={hasRefreshTokenOnly}
-              onClick={() => setHasRefreshTokenOnly(value => !value)}
+          <div className="flex flex-1 flex-wrap items-center gap-2">
+            <input
+              value={search}
+              onChange={event => setSearch(event.target.value)}
+              placeholder="搜索账号 (邮箱)"
+              className="w-full max-w-xs rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+            />
+            <select
+              value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value as any)}
+              className="rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm text-[var(--text-primary)]"
             >
-              <KeyRound className="mr-1.5 h-4 w-4" />仅看有 RT
-            </Button>
+              <option value="all">全部状态</option>
+              <option value="valid">✅ 正常有效</option>
+              <option value="invalid">❌ 401 失效</option>
+              <option value="has_mailbox">📧 微软长效托管</option>
+              <option value="has_rt">🔑 包含 RT（仅看有 RT）</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => void load()} disabled={loading}>
               <RefreshCw className={`mr-1.5 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />刷新
             </Button>
           </div>
         </div>
+
+        {/* 浮动批量操作条 */}
+        {selectedIds.length > 0 ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-sky-500/30 bg-sky-500/10 px-4 py-2.5 text-sm text-sky-200">
+            <div className="flex items-center gap-2 font-medium">
+              <CheckSquare className="h-4 w-4 text-sky-400" />
+              <span>已选中 <strong className="text-white">{selectedIds.length}</strong> 个账号</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-sky-500/40 bg-sky-500/20 text-sky-200 hover:bg-sky-500/30"
+                disabled={batchActionLoading}
+                onClick={() => void handleBatchCheck()}
+                title="针对选中的账号创建 401 验活任务"
+              >
+                <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                {batchActionLoading ? '处理中…' : '定向验活'}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-sky-500/40 bg-sky-500/20 text-sky-200 hover:bg-sky-500/30"
+                disabled={batchActionLoading}
+                onClick={() => void handleBatchExport()}
+                title="导出选中账号"
+              >
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                {batchActionLoading ? '处理中…' : `导出选中 (${exportFormat.toUpperCase()})`}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-red-500/40 bg-red-500/20 text-red-300 hover:bg-red-500/30"
+                disabled={batchActionLoading}
+                onClick={() => void handleBatchDelete()}
+                title="批量删除选中账号"
+              >
+                <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                {batchActionLoading ? '删除中…' : '批量删除'}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-[var(--text-muted)] hover:text-white"
+                onClick={() => setSelectedIds([])}
+              >
+                取消选择
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[600px] text-sm">
+          <table className="w-full min-w-[700px] text-sm">
             <thead className="bg-[var(--bg-pane)]/60 text-left text-xs uppercase tracking-wide text-[var(--text-muted)]">
               <tr>
+                <th className="w-10 px-4 py-3 text-center">
+                  <input
+                    type="checkbox"
+                    checked={accounts.length > 0 && selectedIds.length === accounts.length}
+                    onChange={toggleSelectAll}
+                    aria-label="全选当前页"
+                    className="rounded border-[var(--border)] text-sky-500 cursor-pointer"
+                  />
+                </th>
                 <th className="px-4 py-3 font-medium">账号</th>
                 <th className="px-4 py-3 font-medium">密码</th>
-                <th className="px-4 py-3 font-medium">RT</th>
+                <th className="px-4 py-3 font-medium">Token 状态</th>
                 <th className="px-4 py-3 font-medium">401 状态</th>
                 <th className="px-4 py-3 font-medium">注册时间</th>
-                <th className="px-4 py-3 font-medium"></th>
+                <th className="px-4 py-3 font-medium text-right">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
-              {accounts.map(account => (
-                <tr key={account.id} className="hover:bg-[var(--bg-hover)]/60">
-                  <td className="px-4 py-3 font-mono text-[var(--text-primary)]">{account.email}</td>
-                  <td className="px-4 py-3 font-mono text-[var(--text-secondary)]">{account.password || '-'}</td>
-                  <td className="px-4 py-3">
-                    <span className={account.has_refresh_token ? 'text-emerald-400' : 'text-[var(--text-muted)]'}>
-                      {account.has_refresh_token ? '有 RT' : '无 RT'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">{statePill(account.refresh_token_status)}</td>
-                  <td className="px-4 py-3 text-[var(--text-secondary)]">{formatDate(account.created_at)}</td>
-                  <td className="px-4 py-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => void copyAccount(account)}
-                      title="复制 账号 / 密码 / 2FA 查看链接"
-                      className="inline-flex items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg-pane)]/40 px-2 py-1 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                      {copiedId === account.id ? '已复制' : '复制'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {accounts.map(account => {
+                const isSelected = selectedIds.includes(account.id)
+                return (
+                  <tr
+                    key={account.id}
+                    className={`transition-colors ${
+                      isSelected ? 'bg-sky-500/10 hover:bg-sky-500/15' : 'hover:bg-[var(--bg-hover)]/60'
+                    }`}
+                  >
+                    <td className="w-10 px-4 py-3 text-center">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelectOne(account.id)}
+                        aria-label={`选择账号 ${account.email}`}
+                        className="rounded border-[var(--border)] text-sky-500 cursor-pointer"
+                      />
+                    </td>
+                    <td className="px-4 py-3 font-mono text-[var(--text-primary)]">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span>{account.email}</span>
+                        {account.has_mailbox ? (
+                          <span
+                            className="inline-flex items-center gap-1 rounded bg-sky-500/10 px-1.5 py-0.5 text-[11px] font-sans text-sky-400 border border-sky-500/20"
+                            title={`绑定微软长效邮箱：${account.mailbox_email || '已托管'}`}
+                          >
+                            <Mail className="h-3 w-3" />
+                            长效托管
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 font-mono text-[var(--text-secondary)]">{account.password || '-'}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-col gap-1 items-start">
+                        <span className={account.has_refresh_token ? 'text-emerald-400 font-medium text-xs' : 'text-[var(--text-muted)] text-xs'}>
+                          {account.has_refresh_token ? '🔑 有 RT' : '无 RT'}
+                        </span>
+                        {formatAtExpiry(account.at_expires_at)}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">{statePill(account.refresh_token_status)}</td>
+                    <td className="px-4 py-3 text-[var(--text-secondary)] text-xs">{formatDate(account.created_at)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void copyAccount(account)}
+                          title="复制 账号 / 密码 / 2FA 查看链接"
+                          className="inline-flex items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg-pane)]/40 px-2 py-1 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                          {copiedId === account.id ? '已复制' : '复制'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deleteAccount(account)}
+                          disabled={deletingId === account.id}
+                          title="删除账号"
+                          className="inline-flex items-center gap-1 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          {deletingId === account.id ? '删除中' : '删除'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
               {!loading && accounts.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-16 text-center text-[var(--text-muted)]">暂无账号</td></tr>
+                <tr><td colSpan={7} className="px-4 py-16 text-center text-[var(--text-muted)]">暂无账号</td></tr>
               ) : null}
             </tbody>
           </table>

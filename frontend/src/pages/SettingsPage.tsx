@@ -213,6 +213,49 @@ function GeneralTab({
         </div>
       </SettingGroup>
 
+      <SettingGroup
+        title="版本与系统信息"
+        desc="当前应用运行版本、核心功能及构建记录。"
+      >
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-[var(--text-secondary)]">当前版本</span>
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs font-mono font-semibold text-emerald-400 border border-emerald-500/20">
+              v1.2.0 · 最新版
+            </span>
+          </div>
+          <div className="flex items-center justify-between border-t border-[var(--border)] pt-3">
+            <span className="text-sm text-[var(--text-secondary)]">构建日期</span>
+            <span className="text-sm font-mono text-[var(--text-primary)]">2026-09-15</span>
+          </div>
+          <div className="border-t border-[var(--border)] pt-3">
+            <span className="text-xs font-medium text-[var(--text-muted)] block mb-2">已集成功能特性：</span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-[var(--text-secondary)]">
+              <div className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                <span>账号批量多选 / 批量删除</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                <span>401 恢复账号专属 SUB 导出</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                <span>AT 访问令牌到期倒计时</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                <span>微软母体邮箱一键批量测活</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                <span>邮箱池裂变耗尽预警与清理</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </SettingGroup>
+
       <Button onClick={save} disabled={saving} className="w-full">
         <Save className="mr-2 h-4 w-4" />
         {saved

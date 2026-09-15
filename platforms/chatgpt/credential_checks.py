@@ -1079,13 +1079,9 @@ def _build_protocol_login_otp_callback(
 
 
 def _next_protocol_login_profile():
-    global _PROTOCOL_LOGIN_PROFILE_POOL
-    with _PROTOCOL_LOGIN_PROFILE_LOCK:
-        if _PROTOCOL_LOGIN_PROFILE_POOL is None:
-            from .environment_profile import FingerprintPool
+    from .environment_profile import ProtocolEnvironmentProfile
 
-            _PROTOCOL_LOGIN_PROFILE_POOL = FingerprintPool.from_us_en_desktop()
-        return next(_PROTOCOL_LOGIN_PROFILE_POOL)
+    return ProtocolEnvironmentProfile.desktop_us_en_firefox_v1()
 
 
 def _login_with_registration_protocol(

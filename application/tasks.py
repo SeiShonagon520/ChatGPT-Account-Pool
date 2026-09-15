@@ -1944,13 +1944,14 @@ def _run_single_refresh_token_check(
                 and not is_cancelled()
             ):
                 if event_callback:
-                    event_callback("协议登录被上游边缘拦截，切换 Camoufox 执行密码 + TOTP 登录")
+                    event_callback("协议登录被上游边缘拦截，切换 Camoufox 执行密码 + 邮箱/TOTP 登录")
                 browser_recovery = browser_login(
                     account.email,
                     account.password,
                     str(extra.get("totp_secret") or "").strip(),
                     proxy=login_proxy,
                     log=event_callback,
+                    provider_accounts=list(extra.get("provider_accounts") or []),
                 )
                 browser_message = str(browser_recovery.get("message") or "")
                 browser_lower = browser_message.lower()
@@ -2362,8 +2363,10 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
         "banned": 0,
         "missing_mailbox": 0,
     }
+    recovered_account_ids: list[int] = []
+    recovered_emails: list[str] = []
     if not account_ids:
-        logger.set_result_data({**results, **concurrency_data})
+        logger.set_result_data({**results, **concurrency_data, "recovered_account_ids": [], "recovered_emails": []})
         logger.finish(TASK_STATUS_SUCCEEDED)
         return
 
@@ -2604,6 +2607,11 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
                                 results["login_failed"] += 1
                         if result.get("login_succeeded"):
                             results["login_succeeded"] += 1
+                            rec_id = result.get("account_id")
+                            if rec_id and rec_id not in recovered_account_ids and state == "valid":
+                                recovered_account_ids.append(rec_id)
+                                if result.get("email"):
+                                    recovered_emails.append(str(result.get("email")))
                         recovery_state = str(result.get("recovery_state") or "")
                         if recovery_state == "banned":
                             results["banned"] += 1
@@ -2674,6 +2682,11 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
                             results["login_attempted"] += 1
                         if result.get("login_succeeded"):
                             results["login_succeeded"] += 1
+                            rec_id = result.get("account_id")
+                            if rec_id and rec_id not in recovered_account_ids and state == "valid":
+                                recovered_account_ids.append(rec_id)
+                                if result.get("email"):
+                                    recovered_emails.append(str(result.get("email")))
                         recovery_state = str(result.get("recovery_state") or "")
                         if result.get("login_attempted") and not result.get("login_succeeded"):
                             if recovery_state not in {"banned", "missing_mailbox", "cancelled"}:
@@ -2709,7 +2722,13 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
     except Exception:
         pass
     if cancelled:
-        logger.set_result_data({**results, **concurrency_data})
+        logger.set_result_data({
+            **results,
+            **concurrency_data,
+            "recovered_account_ids": recovered_account_ids,
+            "recovered_emails": recovered_emails,
+            "recovered_count": len(recovered_account_ids),
+        })
         logger.set_progress(completed, total)
         logger.set_counts(success=successes, error=errors)
         logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
@@ -2719,7 +2738,20 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
         + results["unknown"]
         + results["missing"]
     )
-    logger.set_result_data({**results, **concurrency_data, "unresolved": unresolved})
+    logger.set_result_data({
+        **results,
+        **concurrency_data,
+        "unresolved": unresolved,
+        "recovered_account_ids": recovered_account_ids,
+        "recovered_emails": recovered_emails,
+        "recovered_count": len(recovered_account_ids),
+    })
+    if recovered_account_ids:
+        logger.log(
+            f"🎉 401 恢复成功：已解救并刷新 {len(recovered_account_ids)} 个账号 AT: "
+            f"{', '.join(recovered_emails)}",
+            event_type="progress",
+        )
     logger.set_progress(completed, total)
     logger.set_counts(success=successes, error=errors + unresolved)
     all_recovery_logins_failed = (

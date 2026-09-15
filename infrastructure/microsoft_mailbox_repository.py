@@ -489,6 +489,42 @@ class MicrosoftMailboxRepository:
             )
         return bool(result.rowcount)
 
+    def delete_by_email(self, email: str) -> bool:
+        key = _email_key(email)
+        if not key:
+            return False
+        statement = text(
+            """
+            DELETE FROM microsoft_mailboxes
+            WHERE email_key = :email_key
+            """
+        )
+        with engine.begin() as connection:
+            result = connection.execute(statement, {"email_key": key})
+        return bool(result.rowcount)
+
+    def delete_disabled(self) -> int:
+        statement = text(
+            """
+            DELETE FROM microsoft_mailboxes
+            WHERE status = 'disabled'
+            """
+        )
+        with engine.begin() as connection:
+            result = connection.execute(statement)
+        return int(result.rowcount or 0)
+
+    def list_for_testing(self, emails: list[str] | None = None) -> list[MicrosoftMailboxRecord]:
+        with Session(engine) as session:
+            statement = select(MicrosoftMailboxModel)
+            if emails:
+                keys = [_email_key(e) for e in emails if _email_key(e)]
+                statement = statement.where(MicrosoftMailboxModel.email_key.in_(keys))
+            else:
+                statement = statement.where(MicrosoftMailboxModel.status != "disabled")
+            rows = session.exec(statement.order_by(MicrosoftMailboxModel.id)).all()
+            return [self._record(row) for row in rows]
+
     def stats(self) -> dict:
         now = _utcnow()
         with Session(engine) as session:
@@ -510,6 +546,11 @@ class MicrosoftMailboxRepository:
                     MicrosoftMailboxModel.status == "exhausted"
                 )
             ).one()
+            disabled = session.exec(
+                select(func.count(MicrosoftMailboxModel.id)).where(
+                    MicrosoftMailboxModel.status == "disabled"
+                )
+            ).one()
             reserved = session.exec(
                 select(func.count(MicrosoftMailboxLeaseModel.id))
                 .join(
@@ -520,13 +561,31 @@ class MicrosoftMailboxRepository:
                 .where(MicrosoftMailboxLeaseModel.status == "reserved")
                 .where(MicrosoftMailboxLeaseModel.expires_at > now)
             ).one()
+
+        total_int = int(total or 0)
+        capacity_int = int(capacity or 0)
+        used_int = int(used or 0)
+        reserved_int = int(reserved or 0)
+        remaining = max(int(available or 0) - reserved_int, 0)
+        exhaustion_rate = round((used_int / capacity_int) * 100, 1) if capacity_int > 0 else 0.0
+
+        if total_int == 0 or remaining == 0:
+            alert_level = "critical"
+        elif remaining <= 10:
+            alert_level = "warning"
+        else:
+            alert_level = "healthy"
+
         return {
-            "total": int(total or 0),
-            "capacity": int(capacity or 0),
-            "used": int(used or 0),
-            "reserved": int(reserved or 0),
-            "remaining": max(int(available or 0) - int(reserved or 0), 0),
+            "total": total_int,
+            "capacity": capacity_int,
+            "used": used_int,
+            "reserved": reserved_int,
+            "remaining": remaining,
             "exhausted": int(exhausted or 0),
+            "disabled": int(disabled or 0),
+            "exhaustion_rate": exhaustion_rate,
+            "alert_level": alert_level,
         }
 
     def list_page(

@@ -44,6 +44,10 @@ def test_account_list_is_server_paginated_and_redacts_credentials(client):
         "refresh_token_status",
         "has_refresh_token",
         "created_at",
+        "at_expires_at",
+        "has_mailbox",
+        "mailbox_email",
+        "plan_name",
     }
     assert row["has_refresh_token"] is True
     assert "password" in row  # mailbox password is shown by design

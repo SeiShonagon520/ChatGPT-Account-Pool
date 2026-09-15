@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { RefreshCw, Square } from 'lucide-react'
+import { CheckCircle2, Download, RefreshCw, Square } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { TaskLogPanel } from '@/components/tasks/TaskLogPanel'
-import { apiFetch } from '@/lib/utils'
+import { apiDownload, apiFetch, triggerBrowserDownload } from '@/lib/utils'
 
 const TYPE_LABELS: Record<string, string> = {
   register: '协议注册',
@@ -72,22 +72,48 @@ export default function Tasks() {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium text-[var(--text-primary)]">{TYPE_LABELS[task.type] || task.type}</span>
                       <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-xs text-sky-300 ring-1 ring-inset ring-sky-500/30">{task.status}</span>
+                      {task.data?.recovered_count ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300 ring-1 ring-inset ring-emerald-500/30">
+                          <CheckCircle2 className="h-3 w-3" />
+                          已解救 {task.data.recovered_count} 个 401 账号
+                        </span>
+                      ) : null}
                     </div>
                     <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-sm text-[var(--text-secondary)]">
                       <span>进度 <b className="text-[var(--text-primary)]">{task.progress}</b></span>
                       <span className="font-mono text-xs text-[var(--text-muted)]" title={task.task_id}>{task.task_id}</span>
                     </div>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void stop(task.task_id)}
-                    disabled={!task.cancellable || stoppingId === task.task_id}
-                    className="shrink-0 border-red-500/35 text-red-300 hover:bg-red-500/10 hover:text-red-200"
-                  >
-                    <Square className="mr-2 h-3.5 w-3.5" />
-                    {stoppingId === task.task_id ? '停止中…' : '停止任务'}
-                  </Button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {task.data?.recovered_count ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                        onClick={async () => {
+                          try {
+                            const { blob, filename } = await apiDownload(`/accounts/tasks/${task.task_id}/export-recovered-sub2api`)
+                            triggerBrowserDownload(blob, filename)
+                          } catch (err: any) {
+                            alert(err?.message || '下载恢复账号失败')
+                          }
+                        }}
+                      >
+                        <Download className="mr-1.5 h-3.5 w-3.5" />
+                        下载恢复账号 (Sub 格式)
+                      </Button>
+                    ) : null}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void stop(task.task_id)}
+                      disabled={!task.cancellable || stoppingId === task.task_id}
+                      className="border-red-500/35 text-red-300 hover:bg-red-500/10 hover:text-red-200"
+                    >
+                      <Square className="mr-2 h-3.5 w-3.5" />
+                      {stoppingId === task.task_id ? '停止中…' : '停止任务'}
+                    </Button>
+                  </div>
                 </div>
                 <TaskLogPanel taskId={task.task_id} compact onDone={() => void load()} />
               </div>

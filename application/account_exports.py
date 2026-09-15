@@ -164,40 +164,49 @@ def _generate_cpa_token_json(item: AccountRecord) -> dict:
     return generate_token_json(_to_cpa_account(item))
 
 
-def _make_sub2api_json(item: AccountRecord) -> dict:
+def _make_sub2api_account(item: AccountRecord) -> dict:
     payload = _chatgpt_export_payload(item)
     return {
+        "name": payload["email"],
+        "platform": "openai",
+        "type": "oauth",
+        "credentials": {
+            "access_token": payload["access_token"],
+            "chatgpt_account_id": payload["account_id"],
+            "chatgpt_user_id": "",
+            "client_id": payload["client_id"],
+            "expires_at": payload["expires_at_unix"],
+            "expires_in": 863999,
+            "model_mapping": {
+                "gpt-5.1": "gpt-5.1",
+                "gpt-5.1-codex": "gpt-5.1-codex",
+                "gpt-5.1-codex-max": "gpt-5.1-codex-max",
+                "gpt-5.1-codex-mini": "gpt-5.1-codex-mini",
+                "gpt-5.2": "gpt-5.2",
+                "gpt-5.2-codex": "gpt-5.2-codex",
+            },
+            "organization_id": payload["workspace_id"],
+            "refresh_token": payload["refresh_token"],
+        },
+        "extra": {},
+        "concurrency": 10,
+        "priority": 1,
+        "rate_multiplier": 1,
+        "auto_pause_on_expired": True,
+    }
+
+
+def _make_sub2api_json(item: AccountRecord) -> dict:
+    return {
         "proxies": [],
-        "accounts": [
-            {
-                "name": payload["email"],
-                "platform": "openai",
-                "type": "oauth",
-                "credentials": {
-                    "access_token": payload["access_token"],
-                    "chatgpt_account_id": payload["account_id"],
-                    "chatgpt_user_id": "",
-                    "client_id": payload["client_id"],
-                    "expires_at": payload["expires_at_unix"],
-                    "expires_in": 863999,
-                    "model_mapping": {
-                        "gpt-5.1": "gpt-5.1",
-                        "gpt-5.1-codex": "gpt-5.1-codex",
-                        "gpt-5.1-codex-max": "gpt-5.1-codex-max",
-                        "gpt-5.1-codex-mini": "gpt-5.1-codex-mini",
-                        "gpt-5.2": "gpt-5.2",
-                        "gpt-5.2-codex": "gpt-5.2-codex",
-                    },
-                    "organization_id": payload["workspace_id"],
-                    "refresh_token": payload["refresh_token"],
-                },
-                "extra": {},
-                "concurrency": 10,
-                "priority": 1,
-                "rate_multiplier": 1,
-                "auto_pause_on_expired": True,
-            }
-        ],
+        "accounts": [_make_sub2api_account(item)],
+    }
+
+
+def _make_sub2api_bundle_json(items: list[AccountRecord]) -> dict:
+    return {
+        "proxies": [],
+        "accounts": [_make_sub2api_account(item) for item in items],
     }
 
 
@@ -532,6 +541,24 @@ class AccountExportsService:
             content=buffer,
         )
 
+    def export_chatgpt_sub2api_bundle(
+        self, selection: AccountExportSelection
+    ) -> ExportArtifact:
+        """导出账号列表为单个合并的 sub2api JSON 格式文件。"""
+        items = self._load_chatgpt_items(selection)
+        if not items:
+            raise ValueError("未选择任何账号")
+        if len(items) == 1:
+            filename = f"{items[0].email}_sub2api.json"
+        else:
+            filename = _timestamp_name(f"recovered_{len(items)}_accounts_sub2api", "json")
+        content = json.dumps(_make_sub2api_bundle_json(items), ensure_ascii=False, indent=2)
+        return ExportArtifact(
+            filename=filename,
+            media_type="application/json",
+            content=content,
+        )
+
     def export_chatgpt_agent_identity_sub2api(
         self, selection: AccountExportSelection
     ) -> ExportArtifact:
@@ -640,6 +667,17 @@ class AccountExportsService:
             filename=_timestamp_name("cpa_tokens", "zip"),
             media_type="application/zip",
             content=buffer,
+        )
+
+    def export_chatgpt_cockpit(self, selection: AccountExportSelection) -> ExportArtifact:
+        """导出 ChatGPT 账号为 Cockpit codex token 列表 JSON。"""
+        items = self._load_chatgpt_items(selection)
+        tokens = [_make_cockpit_token(item) for item in items]
+        content = json.dumps(tokens, ensure_ascii=False, indent=2)
+        return ExportArtifact(
+            filename=_timestamp_name("cockpit_tokens", "json"),
+            media_type="application/json",
+            content=content,
         )
 
     def _load_chatgpt_items(self, selection: AccountExportSelection) -> list[AccountRecord]:

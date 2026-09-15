@@ -134,6 +134,35 @@ class AccountsRepository:
                 else:
                     statement = statement.where(~refresh_token_condition)
                     count_statement = count_statement.where(~refresh_token_condition)
+            if query.status:
+                norm_status = query.status.strip().lower()
+                if norm_status == "valid":
+                    st_ids = select(AccountOverviewModel.account_id).where(
+                        func.lower(func.coalesce(func.json_extract(AccountOverviewModel.summary_json, "$.refresh_token_status"), "")) == "valid"
+                    )
+                    statement = statement.where(AccountModel.id.in_(st_ids))
+                    count_statement = count_statement.where(AccountModel.id.in_(st_ids))
+                elif norm_status == "invalid":
+                    st_ids = select(AccountOverviewModel.account_id).where(
+                        func.lower(func.coalesce(func.json_extract(AccountOverviewModel.summary_json, "$.refresh_token_status"), "")) == "invalid"
+                    )
+                    statement = statement.where(AccountModel.id.in_(st_ids))
+                    count_statement = count_statement.where(AccountModel.id.in_(st_ids))
+                elif norm_status == "has_mailbox":
+                    from core.db import ProviderAccountModel
+                    st_ids = select(ProviderAccountModel.account_id).where(
+                        ProviderAccountModel.provider_name == "local_ms_pool"
+                    )
+                    statement = statement.where(AccountModel.id.in_(st_ids))
+                    count_statement = count_statement.where(AccountModel.id.in_(st_ids))
+                elif norm_status == "has_rt":
+                    rt_ids = select(AccountCredentialModel.account_id).where(
+                        AccountCredentialModel.scope == "platform",
+                        AccountCredentialModel.key.in_(("refresh_token", "refreshToken")),
+                        AccountCredentialModel.value != "",
+                    )
+                    statement = statement.where(AccountModel.id.in_(rt_ids))
+                    count_statement = count_statement.where(AccountModel.id.in_(rt_ids))
             total = int(session.exec(count_statement).one() or 0)
             statement = (
                 statement
@@ -257,92 +286,135 @@ class AccountsRepository:
             session.commit()
             return True
 
-    def import_lines(self, platform: str, lines: list[AccountImportLine]) -> int:
+    def import_lines(self, platform: str, lines: list[AccountImportLine]) -> dict[str, int]:
+        if not lines:
+            return {"received": 0, "unique": 0, "created": 0, "updated": 0, "failed": 0}
+
+        unique_lines: dict[str, AccountImportLine] = {}
+        for line in lines:
+            key = line.email.strip().lower()
+            if key:
+                unique_lines[key] = line
+
         created = 0
+        updated = 0
+        failed = 0
+
         with Session(engine) as session:
-            for line in lines:
-                model = AccountModel(
-                    platform=platform,
-                    email=line.email,
-                    password=line.password,
-                )
-                session.add(model)
-                created += 1
-            session.commit()
-            models = session.exec(
-                select(AccountModel)
-                .where(AccountModel.platform == platform)
-                .order_by(AccountModel.id.desc())
-                .limit(created)
-            ).all()
-            by_email = {line.email: line for line in lines}
-            for model in models:
-                line = by_email.get(model.email)
-                if not line:
-                    sync_account_graph(session, model)
-                    continue
-                extra = dict(line.extra or {})
-                summary_updates = dict(extra.get("overview") or extra.get("summary") or {})
-                for key in ("trial_end_time", "cashier_url", "region", "remote_email", "checked_at"):
-                    if key in extra and key not in summary_updates:
-                        summary_updates[key] = extra[key]
-                legacy_extra = {
-                    key: value
-                    for key, value in extra.items()
-                    if key not in {
-                        "overview",
-                        "summary",
-                        "primary_token",
-                        "token",
-                        "lifecycle_status",
-                        "status",
-                        "cashier_url",
-                        "trial_end_time",
-                        "region",
-                        "remote_email",
-                        "checked_at",
-                        "credentials",
-                        "provider_accounts",
-                        "provider_resources",
+            keys = list(unique_lines.keys())
+            existing_map: dict[str, AccountModel] = {}
+            for start in range(0, len(keys), 500):
+                chunk = keys[start : start + 500]
+                chunk_models = session.exec(
+                    select(AccountModel).where(
+                        AccountModel.platform == platform,
+                        AccountModel.email.in_(chunk),
+                    )
+                ).all()
+                for m in chunk_models:
+                    existing_map[m.email.strip().lower()] = m
+
+            for email_key, line in unique_lines.items():
+                try:
+                    if email_key in existing_map:
+                        model = existing_map[email_key]
+                        if line.password:
+                            model.password = line.password
+                        model.updated_at = datetime.now(timezone.utc)
+                        session.add(model)
+                        session.commit()
+                        session.refresh(model)
+                        updated += 1
+                    else:
+                        model = AccountModel(
+                            platform=platform,
+                            email=line.email,
+                            password=line.password,
+                        )
+                        session.add(model)
+                        session.commit()
+                        session.refresh(model)
+                        existing_map[email_key] = model
+                        created += 1
+                        try:
+                            from core.db import record_registered_email_history
+                            record_registered_email_history(platform, line.email)
+                        except Exception:
+                            pass
+
+                    extra = dict(line.extra or {})
+                    summary_updates = dict(extra.get("overview") or extra.get("summary") or {})
+                    for key in ("trial_end_time", "cashier_url", "region", "remote_email", "checked_at"):
+                        if key in extra and key not in summary_updates:
+                            summary_updates[key] = extra[key]
+                    legacy_extra = {
+                        key: value
+                        for key, value in extra.items()
+                        if key not in {
+                            "overview",
+                            "summary",
+                            "primary_token",
+                            "token",
+                            "lifecycle_status",
+                            "status",
+                            "cashier_url",
+                            "trial_end_time",
+                            "region",
+                            "remote_email",
+                            "checked_at",
+                            "credentials",
+                            "provider_accounts",
+                            "provider_resources",
+                        }
+                        and value not in (None, "", [], {})
                     }
-                    and value not in (None, "", [], {})
-                }
-                if legacy_extra:
-                    summary_updates["legacy_extra"] = legacy_extra
-                credential_updates = dict(extra.get("credentials") or {})
-                for key in (
-                    "access_token",
-                    "refresh_token",
-                    "session_token",
-                    "id_token",
-                    "accessToken",
-                    "refreshToken",
-                    "sessionToken",
-                    "idToken",
-                    "cookies",
-                    "cookie",
-                    "api_key",
-                    "wos_session",
-                    "sso",
-                    "sso_rw",
-                ):
-                    if key in extra and key not in credential_updates:
-                        credential_updates[key] = extra[key]
-                primary_token = extra.get("primary_token")
-                if primary_token in (None, ""):
-                    primary_token = extra.get("token")
-                patch_account_graph(
-                    session,
-                    model,
-                    lifecycle_status=str(extra.get("lifecycle_status") or extra.get("status") or "registered"),
-                    primary_token=str(primary_token or "") or None,
-                    cashier_url=str(extra.get("cashier_url") or "") or None,
-                    summary_updates=summary_updates or None,
-                    credential_updates=credential_updates or None,
-                    provider_accounts=list(extra.get("provider_accounts") or []) or None,
-                    provider_resources=list(extra.get("provider_resources") or []) or None,
-                    replace_provider_accounts=bool(extra.get("provider_accounts")),
-                    replace_provider_resources=bool(extra.get("provider_resources")),
-                )
-            session.commit()
-        return created
+                    if legacy_extra:
+                        summary_updates["legacy_extra"] = legacy_extra
+                    credential_updates = dict(extra.get("credentials") or {})
+                    for key in (
+                        "access_token",
+                        "refresh_token",
+                        "session_token",
+                        "id_token",
+                        "accessToken",
+                        "refreshToken",
+                        "sessionToken",
+                        "idToken",
+                        "cookies",
+                        "cookie",
+                        "api_key",
+                        "wos_session",
+                        "sso",
+                        "sso_rw",
+                        "totp_secret",
+                        "auth_type",
+                    ):
+                        if key in extra and key not in credential_updates:
+                            credential_updates[key] = extra[key]
+                    primary_token = extra.get("primary_token")
+                    if primary_token in (None, ""):
+                        primary_token = extra.get("token")
+                    patch_account_graph(
+                        session,
+                        model,
+                        lifecycle_status=str(extra.get("lifecycle_status") or extra.get("status") or "registered"),
+                        primary_token=str(primary_token or "") or None,
+                        cashier_url=str(extra.get("cashier_url") or "") or None,
+                        summary_updates=summary_updates or None,
+                        credential_updates=credential_updates or None,
+                        provider_accounts=list(extra.get("provider_accounts") or []) or None,
+                        provider_resources=list(extra.get("provider_resources") or []) or None,
+                        replace_provider_accounts=bool(extra.get("provider_accounts")),
+                        replace_provider_resources=bool(extra.get("provider_resources")),
+                    )
+                    session.commit()
+                except Exception:
+                    failed += 1
+
+        return {
+            "received": len(lines),
+            "unique": len(unique_lines),
+            "created": created,
+            "updated": updated,
+            "failed": failed,
+        }

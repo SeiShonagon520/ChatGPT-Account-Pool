@@ -6,7 +6,7 @@ import threading
 import requests
 from fastapi import APIRouter
 
-from core.version import __version__
+from core.version import __version__, __build_date__, __features__
 from core.runtime_mode import har_capture_available, runtime_mode
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -69,12 +69,14 @@ def _is_newer(latest: str, current: str) -> bool:
 
 @router.get("/version")
 def get_version():
-    """返回当前版本与 GitHub 最新 release。前端用此判断是否提示更新。"""
+    """返回当前版本与系统构建信息。前端用此展示版本标识并判断是否提示更新。"""
     current = __version__
     latest = _fetch_latest_release()
     has_update = bool(latest and _is_newer(latest.get("tag", ""), current))
     return {
         "current": current,
+        "build_date": __build_date__,
+        "features": __features__,
         "latest": latest,
         "has_update": has_update,
     }

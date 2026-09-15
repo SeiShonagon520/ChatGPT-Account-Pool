@@ -147,7 +147,14 @@ if os.path.isdir(_static_dir):
     def spa_fallback(full_path: str):
         if full_path.startswith("api/"):
             raise HTTPException(404, "API endpoint not found")
-        return FileResponse(os.path.join(_static_dir, "index.html"))
+        return FileResponse(
+            os.path.join(_static_dir, "index.html"),
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
 
 if __name__ == "__main__":

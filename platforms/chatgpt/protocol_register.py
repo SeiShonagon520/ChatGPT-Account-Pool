@@ -742,11 +742,12 @@ class ChatGPTProtocolRegister:
                 return self._initialize_signup_once(email, registration=registration)
             except (ChatGPTCloudflareChallengeError, ChatGPTRateLimitError) as exc:
                 can_retry = (
-                    self._session_factory is not None
-                    and callable(self.proxy_rotate_callback)
-                    and attempt < _OAUTH_INIT_MAX_ATTEMPTS
+                    attempt < _OAUTH_INIT_MAX_ATTEMPTS
+                    and (callable(self.proxy_rotate_callback) or self._session_factory is not None)
                 )
-                if not can_retry or not self._rotate_proxy_after_challenge():
+                if not can_retry:
+                    raise
+                if callable(self.proxy_rotate_callback) and not self._rotate_proxy_after_challenge():
                     raise
                 retry_base = (
                     5.0
@@ -764,9 +765,10 @@ class ChatGPTProtocolRegister:
                     if "rate limit" in str(exc.stage).lower()
                     else "Cloudflare challenge"
                 )
+                retry_target = "on a new proxy" if callable(self.proxy_rotate_callback) else "after delay"
                 self.log(
                     f"{reason} at {exc.stage}; retrying OAuth "
-                    f"on a new proxy in {delay:.1f}s "
+                    f"{retry_target} in {delay:.1f}s "
                     f"({attempt + 1}/{_OAUTH_INIT_MAX_ATTEMPTS})"
                 )
                 self._wait_before_oauth_retry(delay)
@@ -1223,6 +1225,29 @@ class ChatGPTProtocolRegister:
             return True
         return False
 
+    @staticmethod
+    def _looks_like_email_otp_challenge(page_response) -> bool:
+        if page_response is None:
+            return False
+        text = str(getattr(page_response, "text", "") or "").lower()
+        url = str(getattr(page_response, "url", "") or "").lower()
+        if any(marker in url for marker in ("/email-verification", "/email-otp")):
+            return True
+        if any(
+            marker in text
+            for marker in (
+                "email-verification",
+                "check your email",
+                "sent a code to",
+                "enter the code we sent",
+            )
+        ) and (
+            re.search(r"(?:name=[\"'](?:code|otp)[\"']|autocomplete=[\"']one-time-code)", text)
+            or "/email-verification" in text
+        ):
+            return True
+        return False
+
     def _login_totp(self, secret: str, page_response) -> dict:
         """Submit a saved authenticator code on the post-password MFA form."""
         normalized_secret = str(secret or "").strip()
@@ -1593,24 +1618,88 @@ class ChatGPTProtocolRegister:
         try:
             login_page = self._initialize_signup(email)
             self._check_cancelled()
+            login_authorization = None
             if saved_totp_secret:
                 login_authorization = self._submit_login_email(email)
+            else:
+                try:
+                    login_authorization = self._submit_login_email(email)
+                except Exception as email_exc:
+                    if not callable(self.otp_callback):
+                        raise
+                    self.log(f"登录邮箱选择步骤异常 ({email_exc})，尝试直接校验 OTP 回调兼容路径")
+
+            if login_authorization is not None:
                 login_continue_url = _authorization_continue_url(login_authorization)
                 login_page_type = _authorization_page_type(login_authorization)
-                if not _password_registration_step(login_page_type, login_continue_url):
-                    raise RuntimeError(
-                        "OpenAI 登录方式未提供密码步骤，拒绝改走邮箱验证码"
+                if _password_registration_step(login_page_type, login_continue_url):
+                    login_page = self._load_login_password_page(
+                        login_page,
+                        continue_url=login_continue_url,
                     )
-                login_page = self._load_login_password_page(
-                    login_page,
-                    continue_url=login_continue_url,
-                )
-                self.log("已进入密码登录步骤；密码提交后使用已保存的 TOTP")
+                    self.log("已进入密码登录步骤")
+                    login_result = self._login_password(password, login_page)
+                    self._check_cancelled()
+                    continue_url = str(login_result.get("continue_url") or "").strip()
+                    next_page = login_result.get("response")
+                    if continue_url:
+                        next_page = self._follow_authorize_chain(continue_url)
+                    if saved_totp_secret:
+                        if not self._looks_like_totp_challenge(next_page):
+                            raise RuntimeError(
+                                "密码已提交，但 OpenAI 未进入 TOTP 验证步骤，拒绝改走邮箱验证码"
+                            )
+                        totp_result = self._login_totp(saved_totp_secret, next_page)
+                        self._check_cancelled()
+                        continue_url = str(totp_result.get("continue_url") or "").strip()
+                        if continue_url:
+                            self._follow_authorize_chain(continue_url)
+                        self.log("已使用保存的 TOTP 完成双重验证")
+                    elif self._looks_like_totp_challenge(next_page):
+                        raise RuntimeError("密码已提交，但 OpenAI 要求 TOTP 双重验证，且该账号未保存 TOTP 密匙")
+                    elif self._looks_like_email_otp_challenge(next_page):
+                        self.log("密码提交后 OpenAI 要求邮箱验证码，调用 OTP 回调...")
+                        if not callable(self.otp_callback):
+                            raise RuntimeError("OpenAI 要求邮箱验证码，但未提供 OTP 回调")
+                        code = str(self.otp_callback() or "").strip()
+                        self._check_cancelled()
+                        if not code:
+                            raise RuntimeError("ChatGPT protocol login did not receive an email code")
+                        validation = self._validate_otp(code)
+                        self._check_cancelled()
+                        continue_url = str(validation.get("continue_url") or "").strip()
+                        if continue_url:
+                            self._follow_authorize_chain(continue_url)
+                        self.log("已完成邮箱验证码二次验证")
+                elif _email_otp_step(login_page_type, login_continue_url):
+                    self.log("OpenAI 要求邮箱验证码登录，开始收取邮件...")
+                    if not callable(self.otp_callback):
+                        raise RuntimeError(
+                            "OpenAI 要求邮箱验证码，但未提供 OTP 回调"
+                        )
+                    code = str(self.otp_callback() or "").strip()
+                    self._check_cancelled()
+                    if not code:
+                        raise RuntimeError("ChatGPT protocol login did not receive an email code")
+                    validation = self._validate_otp(code)
+                    self._check_cancelled()
+                    continue_url = str(validation.get("continue_url") or "").strip()
+                    if continue_url:
+                        login_page = self._follow_authorize_chain(continue_url)
+                    self.log("邮箱验证码校验通过")
+                    if self._has_password_form(login_page):
+                        self.log("继续提交密码")
+                        login_result = self._login_password(password, login_page)
+                        self._check_cancelled()
+                        continue_url = str(login_result.get("continue_url") or "").strip()
+                        if continue_url:
+                            self._follow_authorize_chain(continue_url)
+                else:
+                    raise RuntimeError(
+                        f"OpenAI 登录返回未知验证步骤: {login_page_type or 'unknown'}"
+                    )
             else:
-                # Compatibility path for old accounts that do not have a
-                # saved TOTP secret.  Mailbox OTP is never touched when TOTP
-                # exists, so normal password+2FA accounts do not wait 180s for
-                # an email that OpenAI will not send.
+                # Compatibility path for test doubles where signup was not mocked
                 if not callable(self.otp_callback):
                     raise RuntimeError(
                         "ChatGPT protocol login requires a saved TOTP secret or OTP callback"
@@ -1624,43 +1713,30 @@ class ChatGPTProtocolRegister:
                 continue_url = str(validation.get("continue_url") or "").strip()
                 if continue_url:
                     login_page = self._follow_authorize_chain(continue_url)
-            login_result = self._login_password(password, login_page)
-            self._check_cancelled()
-            continue_url = str(login_result.get("continue_url") or "").strip()
-            next_page = login_result.get("response")
-            if continue_url:
-                next_page = self._follow_authorize_chain(continue_url)
-            if saved_totp_secret:
-                if not self._looks_like_totp_challenge(next_page):
-                    raise RuntimeError(
-                        "密码已提交，但 OpenAI 未进入 TOTP 验证步骤，拒绝改走邮箱验证码"
-                    )
-                totp_result = self._login_totp(saved_totp_secret, next_page)
+                login_result = self._login_password(password, login_page)
                 self._check_cancelled()
-                continue_url = str(totp_result.get("continue_url") or "").strip()
+                continue_url = str(login_result.get("continue_url") or "").strip()
                 if continue_url:
                     self._follow_authorize_chain(continue_url)
-                self.log("已使用保存的 TOTP 完成双重验证")
+
             result = self._session_result(email, password)
             self.log("ChatGPT protocol login completed and issued a session token")
             return result
         except ChatGPTCloudflareChallengeError as exc:
             retries = int(getattr(self, "_login_cloudflare_retries", 0) or 0)
-            if (
-                self._session_factory is None
-                or not callable(self.proxy_rotate_callback)
-                or retries >= _OAUTH_INIT_MAX_ATTEMPTS - 1
-                or not self._rotate_proxy_after_challenge()
-            ):
+            if retries >= _OAUTH_INIT_MAX_ATTEMPTS - 1:
+                raise
+            if callable(self.proxy_rotate_callback) and not self._rotate_proxy_after_challenge():
                 raise
             self._login_cloudflare_retries = retries + 1
             delay = min(
                 _OAUTH_INIT_RETRY_BASE_SECONDS * (2 ** retries),
                 _OAUTH_INIT_RETRY_MAX_SECONDS,
             )
+            retry_target = "on a new proxy" if callable(self.proxy_rotate_callback) else "after delay"
             self.log(
                 f"Cloudflare challenge at {exc.stage}; retrying password login "
-                f"on a new proxy in {delay:.1f}s "
+                f"{retry_target} in {delay:.1f}s "
                 f"({retries + 2}/{_OAUTH_INIT_MAX_ATTEMPTS})"
             )
             self._wait_before_oauth_retry(delay)

@@ -72,6 +72,9 @@ def test_repository_reservations_are_atomic_across_instances():
         "reserved": 0,
         "remaining": 0,
         "exhausted": 10,
+        "disabled": 0,
+        "exhaustion_rate": 100.0,
+        "alert_level": "critical",
     }
 
 

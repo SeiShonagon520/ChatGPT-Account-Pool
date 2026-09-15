@@ -59,8 +59,8 @@ def test_sidebar_includes_general_mailbox_and_proxy_pool_settings_submenu_items(
     assert "/settings?tab=${item.hash}" in source
 
 
-def test_app_does_not_mount_the_welcome_dialog():
+def test_app_mounts_the_welcome_dialog():
     source = APP_TSX.read_text(encoding="utf-8")
 
-    assert "WelcomeDialog" not in source
-    assert not WELCOME_DIALOG_TSX.exists()
+    assert "WelcomeDialog" in source
+    assert WELCOME_DIALOG_TSX.exists()

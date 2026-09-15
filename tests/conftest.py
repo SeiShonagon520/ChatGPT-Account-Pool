@@ -42,6 +42,7 @@ def client(monkeypatch):
     from core.lifecycle import lifecycle_manager
     from core.scheduler import scheduler
 
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
     monkeypatch.setattr(scheduler, "start", lambda: None)
     monkeypatch.setattr(scheduler, "stop", lambda: None)
     monkeypatch.setattr(lifecycle_manager, "start", lambda: None)

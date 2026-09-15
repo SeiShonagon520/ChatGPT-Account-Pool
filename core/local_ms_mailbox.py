@@ -27,7 +27,7 @@ from core.base_mailbox import BaseMailbox, MailboxAccount, _extract_verification
 
 GRAPH_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 GRAPH_CONSUMERS_TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
-GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
+GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/messages"
 DEFAULT_GRAPH_SCOPE = "offline_access https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read"
 GRAPH_DEFAULT_SCOPE = "https://graph.microsoft.com/.default"
 DEFAULT_STATE_FILE = Path(__file__).resolve().parent.parent / "data" / ".local_ms_mailbox_pool_state.json"
@@ -545,9 +545,10 @@ class LocalMicrosoftMailboxPool(BaseMailbox):
         errors: list[str] = []
         invalid_grant = False
         strategies = [
-            ("entra-common-delegated", GRAPH_TOKEN_URL, {"scope": self.graph_scope}),
+            ("entra-consumers-default", GRAPH_CONSUMERS_TOKEN_URL, {"scope": "https://graph.microsoft.com/.default offline_access"}),
+            ("entra-common-default", GRAPH_TOKEN_URL, {"scope": "https://graph.microsoft.com/.default offline_access"}),
             ("entra-consumers-delegated", GRAPH_CONSUMERS_TOKEN_URL, {"scope": self.graph_scope}),
-            ("entra-common-default", GRAPH_TOKEN_URL, {"scope": GRAPH_DEFAULT_SCOPE}),
+            ("entra-common-delegated", GRAPH_TOKEN_URL, {"scope": self.graph_scope}),
         ]
         for name, url, extra_data in strategies:
             data = {
@@ -571,7 +572,7 @@ class LocalMicrosoftMailboxPool(BaseMailbox):
                     error_payload = response.json() or {}
                 except Exception:
                     error_payload = {}
-                if str(error_payload.get("error") or "").strip().lower() == "invalid_grant":
+                if "default" in name and str(error_payload.get("error") or "").strip().lower() == "invalid_grant":
                     invalid_grant = True
                 errors.append(f"{name}: HTTP {response.status_code} {response.text[:200]}")
                 continue

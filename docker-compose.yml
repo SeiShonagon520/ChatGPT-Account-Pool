@@ -67,6 +67,7 @@ services:
       # - VNC_PASSWORD=changeme
     volumes:
       - ./data:/app/data   # 持久化 SQLite 数据库
+      - ./static:/app/static:ro   # 实时挂载前端静态资源
       - ${MIHOMO_CONFIG_PATH:-./deploy/mihomo/config.yaml}:/app/data/mihomo-config.yaml
     networks:
       - default

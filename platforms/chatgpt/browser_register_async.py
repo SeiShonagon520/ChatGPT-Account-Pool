@@ -654,8 +654,10 @@ async def _browser_registration_flow(
     log,
     startup_gate: asyncio.Semaphore | None = None,
     bind_totp_2fa: bool = False,
+    is_login: bool = False,
 ) -> dict:
-    log(f"开始 ChatGPT 浏览器注册: {email}")
+    action_desc = "登录" if is_login else "注册"
+    log(f"开始 ChatGPT 浏览器{action_desc}: {email}")
 
     async def open_registration_entry() -> bool:
         await _goto_with_retry(page, f"{CHATGPT_APP}/auth/login", log=log)
@@ -757,11 +759,11 @@ async def _browser_registration_flow(
             continue
 
         if stage == "complete":
-            if not password_submitted:
+            if not is_login and not password_submitted:
                 raise RuntimeError(
                     "注册会话已建立，但 OpenAI 端未完成密码设置；拒绝保存无密码账号"
                 )
-            log("注册完成：会话已建立")
+            log(f"{action_desc}完成：会话已建立")
             result = await _build_session_result(
                 page,
                 await _fetch_session_via_page(page, log),
@@ -839,7 +841,7 @@ async def _browser_registration_flow(
             continue
 
         if stage == "otp":
-            if not password_submitted:
+            if not is_login and not password_submitted:
                 if password_fallback_requested_at is not None:
                     if time.monotonic() - password_fallback_requested_at >= 30:
                         raise RuntimeError("已选择密码注册，但 30 秒内未进入密码设置页")
@@ -1009,6 +1011,7 @@ async def register_in_context(browser, *, email: str, password: str, proxy: str 
                               otp_callback: Callable[[], str], log,
                               startup_gate: asyncio.Semaphore | None = None,
                               bind_totp_2fa: bool = False,
+                              is_login: bool = False,
                               close_timeout_seconds: float = 15.0,
                               health_state: dict[str, Any] | None = None) -> dict:
     """在共享浏览器进程里开一个独立指纹 context，跑完注册并关闭 context。"""
@@ -1058,6 +1061,7 @@ async def register_in_context(browser, *, email: str, password: str, proxy: str 
                 log,
                 startup_gate=startup_gate,
                 bind_totp_2fa=bind_totp_2fa,
+                is_login=is_login,
             )
             result = dict(final)
             result.update({

@@ -191,9 +191,11 @@ class BrowserFetchPool:
         self,
         email: str,
         password: str,
-        totp_secret: str,
+        totp_secret: str = "",
         proxy: str | None = None,
         log: Callable[[str], None] | None = None,
+        otp_callback: Callable[[], str] | None = None,
+        provider_accounts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         browser = self._browser
         semaphore = self._login_semaphore
@@ -212,14 +214,30 @@ class BrowserFetchPool:
                     if log is not None:
                         log(message)
 
+                resolved_otp_cb = otp_callback
+                if resolved_otp_cb is None:
+                    if totp_secret:
+                        resolved_otp_cb = lambda: totp_code(totp_secret)
+                    elif provider_accounts:
+                        from platforms.chatgpt.credential_checks import _build_protocol_login_otp_callback
+
+                        resolved_otp_cb = _build_protocol_login_otp_callback(
+                            email,
+                            provider_accounts,
+                            proxy=proxy,
+                        )
+                if resolved_otp_cb is None:
+                    resolved_otp_cb = lambda: ""
+
                 result = await register_in_context(
                     browser,
                     email=email,
                     password=password,
                     proxy=proxy,
-                    otp_callback=lambda: totp_code(totp_secret),
+                    otp_callback=resolved_otp_cb,
                     log=log_callback,
                     bind_totp_2fa=False,
+                    is_login=True,
                 )
                 return {
                     "state": "valid" if str(result.get("access_token") or "").strip() else "invalid",
@@ -243,13 +261,15 @@ class BrowserFetchPool:
         self,
         email: str,
         password: str,
-        totp_secret: str,
+        totp_secret: str = "",
         *,
         proxy: str | None = None,
         log: Callable[[str], None] | None = None,
         timeout_seconds: float = 120.0,
+        otp_callback: Callable[[], str] | None = None,
+        provider_accounts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Use the shared Camoufox browser for a password + TOTP login.
+        """Use the shared Camoufox browser for a password + TOTP or email OTP login.
 
         This is a bounded fallback for protocol logins that are blocked by an
         auth-edge Cloudflare challenge.  It deliberately reuses the browser
@@ -259,7 +279,15 @@ class BrowserFetchPool:
         if self._closed or loop is None or not loop.is_running():
             return {"state": "invalid", "message": "browser login pool is closed", "tokens": {}}
         future = asyncio.run_coroutine_threadsafe(
-            self._login_async(email, password, totp_secret, proxy, log),
+            self._login_async(
+                email,
+                password,
+                totp_secret,
+                proxy=proxy,
+                log=log,
+                otp_callback=otp_callback,
+                provider_accounts=provider_accounts,
+            ),
             loop,
         )
         try:

@@ -106,13 +106,18 @@ function Sidebar({
             <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] text-[11px] font-bold text-white">
               A
             </div>
-            <span className="truncate text-sm font-semibold text-[var(--text-primary)]">
-              aBaiAutoplus
-            </span>
+            <div className="flex flex-col min-w-0 flex-1">
+              <span className="truncate text-sm font-semibold text-[var(--text-primary)] leading-tight">
+                aBaiAutoplus
+              </span>
+              <span className="text-[10px] font-mono text-emerald-400 font-medium leading-tight">
+                v1.2.0 · 最新版
+              </span>
+            </div>
           </div>
         )}
         {collapsed && (
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent)] text-[11px] font-bold text-white">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent)] text-[11px] font-bold text-white" title="v1.2.0 最新版">
             A
           </div>
         )}
