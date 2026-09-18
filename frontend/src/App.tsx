@@ -15,7 +15,6 @@ import Tasks from "@/pages/Tasks";
 import SettingsPage from "@/pages/SettingsPage";
 import MicrosoftMailboxes from "@/pages/MicrosoftMailboxes";
 import UpdateBanner from "@/components/UpdateBanner";
-import WelcomeDialog from "@/components/WelcomeDialog";
 import {
   Moon,
   Settings as SettingsIcon,
@@ -259,7 +258,6 @@ function Shell({
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--bg-base)]">
-      <WelcomeDialog />
       <Sidebar
         theme={theme}
         toggleTheme={toggleTheme}

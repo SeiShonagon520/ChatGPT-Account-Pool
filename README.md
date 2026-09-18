@@ -1,153 +1,168 @@
-# aBaiAutoplus
+# FreeGPT-Manager
 
-一个面向本地部署的账号注册、登录恢复、验活和资源池管理平台。项目提供 FastAPI 后端与 React 管理界面，把协议注册、浏览器注册、密码与 2FA、401 刷新、邮箱池和代理池串成一套可观察、可停止、可复用的任务流程。
-- QQ 群：<https://qm.qq.com/q/JigtiO2Hyc>
-- 群二维码：[assets/screenshots/QQ群交流.jpg](assets/screenshots/QQ群交流.jpg)
-## 核心功能
+<div align="center">
 
-### 注册方式
+**现代化、全自动化的 ChatGPT / OpenAI 账号全生命周期管理与自动化运营平台**
 
-- **协议注册**：通过 HTTP 协议流程完成注册、邮箱验证码处理、密码设置和账号凭据保存。
-- **有头浏览器注册**：使用 Camoufox 浏览器执行注册流程，可在需要时通过 VNC 观察页面操作。
-- **无头浏览器注册**：使用 Camoufox headless 模式运行批量注册任务，支持并发、代理池和任务日志。
-- **密码 + 2FA**：自动注册固定设置远端密码；注册成功后绑定并激活 TOTP 2FA，密码、TOTP 密钥和账号凭据一并保存。注册或绑定失败的账号不会写入成功结果。
-- **验证码处理**：按已启用的 provider 选择远程验证码服务、本地 solver 或人工处理，并从邮箱池读取邮箱验证码。
+[![Release](https://img.shields.io/badge/release-v1.2.0-emerald.svg)](https://github.com/SeiShonagon520/FreeGPT-Manager)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11+-brightgreen.svg)](https://www.python.org/)
+[![React](https://img.shields.io/badge/frontend-React%2018%20%7C%20Vite-61dafb.svg)](frontend/)
 
-### 401 验活与登录恢复
+</div>
 
-- 账号列表显示 access token / refresh token 状态和 401 状态。
-- 一键创建 **401 验活任务**，先用 Camoufox 并行检查账号；失活账号再进入协议登录流程获取新的 access token。
-- 协议恢复登录使用账号已保存的邮箱、密码和 TOTP 2FA；必要时读取新的邮箱验证码。
-- 刷新成功后更新 access token、refresh token 和账号状态，失败原因写入任务日志，方便继续处理。
+---
 
-### 邮箱池管理
+## 📖 简介
 
-支持在设置页维护多种邮箱来源，并在注册任务中选择本次使用的邮箱服务：
+**FreeGPT-Manager** 是一个专为本地私有化部署打造的高性能 OpenAI / ChatGPT 账号矩阵管理、注册裂变、存活监测与自动化复活平台。项目采用 **FastAPI 后端 + React 18 / Vite 现代化前端** 架构，将协议注册、浏览器自动化、密码与 2FA 管理、401 故障自愈、微软母体邮箱池以及动态代理调度深度串联，打造出一套可观察、可停止、可复用的自动化流水线。
 
-- **本地微软邮箱池**：导入 Outlook / Hotmail 邮箱凭据，支持 Microsoft Graph 读取验证码；默认按邮箱使用次数原子分配。
-- **API 邮箱池**：每行配置一个邮箱和对应的验证码 API，支持轮询间隔、请求超时、占用状态和是否允许复用。
-- **自有域名 IMAP 全收**：为每次注册生成独立地址，从 catch-all IMAP 收件箱读取验证码。
-- **自有域名 Inbucket**：通过 Inbucket SMTP/API 生成地址并读取验证码，适合本地开发和测试。
-- 邮箱池页面提供总量、已使用、已耗尽、预留和收件箱查询等统计；注册失败会释放邮箱租约，成功才提交使用记录。
+> 本项目基于开源项目 [aBaiFreeGPT](https://github.com/asz798838958/aBaiFreeGPT) 进行了大量生产级扩展与体验重构，致力于提供更稳定、更高效的账号资产池化与分发能力。
 
-### 代理池管理
+---
 
-- 管理 Mihomo 代理订阅来源，并同步全部代理节点。
-- 查看节点延迟、存活状态、当前选中节点和 UDP 状态。
-- 支持启用/停用节点、切换当前节点、刷新订阅和测速。
-- 注册任务可选择 Mihomo 代理池、动态 IP 提取 API 或本机直连。
-- 代理池注册支持脉冲调度：按健康节点分波并发，节点异常或 IP 被封时暂停分配并定时探测恢复。
+## ✨ 核心特性
 
-### 任务与账号管理
+### 1. ⚡ 401 深度验活与自动故障自愈 (Auto Revive)
+- **多维度探活**：通过 Camoufox 浏览器或官方 API 接口并发检测 Access Token (AT) 与 Refresh Token (RT) 存活状态。
+- **自动收信复活**：针对 401 失活账号，系统自动调度关联的微软母体邮箱，异步收取最新邮箱验证码，通过协议重登并刷回全新的有效 AT/RT，全自动化救号。
+- **专属 SUB 导出**：支持对本次 401 恢复成功的账号进行一键专属导出，标准 Sub2API 格式直接对接聚合分发客户端，无需人工繁琐筛选。
 
-- 注册、401 验活、协议恢复等任务统一进入任务中心。
-- 支持设置注册数量、并发数、邮箱 provider、代理模式和脉冲探测参数。
-- 任务日志实时展示，页面刷新后可恢复任务状态；任务可以从界面停止。
-- 账号列表支持搜索、分页、只看有 refresh token、查看 401 状态和存活率。
-- 一键复制账号、密码、TOTP 信息和 2FA 查看链接，便于后续登录或导出。
-- 启动后会显示 QQ 群二维码弹窗，可从弹窗加入交流群获取教程和更新信息。
+### 2. 🗂️ 账号多选与批量运维操作
+- **灵活多选**：支持列表表头一键全选及跨行单选 Checkbox。
+- **浮动操作栏**：选中账号后自动唤起批量工具栏，支持一键批量删除失效账号，或按选定范围批量导出为 JSON、CSV、Sub2API、CPA、Any2API 等多种标准格式。
 
-## 运行环境
+### 3. ⏳ AT 访问令牌实时到期倒计时
+- 状态栏实时计算并直观展示 Access Token 剩余存活时长。
+- 多级色彩视觉预警：`绿色（充裕）` $\rightarrow$ `黄色/橙色（即将到期）` $\rightarrow$ `红色（已过期）`，方便及时预警并安排刷新。
 
-- Python 3.11+
-- Node.js 18+
-- npm
-- Chromium/Camoufox 运行依赖（浏览器注册或验活时需要）
-- Mihomo（使用代理池时需要）
+### 4. 📬 微软母体邮箱池与裂变用量监控
+- **⚡ 一键批量测活**：支持对邮箱池内所有微软母体邮箱（Outlook / Hotmail）发起高并发 OAuth 探活，自动检测凭据与 Refresh Token 有效性。
+- **失效邮箱自动隔离**：测活失败或鉴权失效的邮箱自动置为「已隔离」并禁用，彻底防止裂变注册任务因死邮箱中断。
+- **📊 裂变用量与耗尽率仪表盘**：实时统计母体总数、剩余可用裂变次数、已用/总限额比例与耗尽率，并在配额告急时醒目预警。
+- **一键清理**：支持一键剔除并清理已失效或已耗尽的废弃邮箱。
 
-## 本地运行
+### 5. 🤖 全能注册与安全凭据体系
+- **多种注册模式**：支持纯 HTTP 协议极速注册、Camoufox 有头浏览器注册（支持 VNC 调试）以及无头并发注册。
+- **密码 + TOTP 2FA**：自动设置强密码并绑定激活 TOTP 2FA，账号凭据、密码及 TOTP Secret 全加密保存。
+- **验证码集成**：支持远程打码服务、本地验证码 Solver 或人工介入。
+
+### 6. 🌐 动态代理池与脉冲调度
+- 内置 Mihomo (Clash) 订阅节点同步管理，实时监控节点延迟与存活状态。
+- 支持动态 IP 提取 API 与本机直连。
+- 支持健康节点分波并发脉冲调度，异常节点自动熔断并延时探测恢复。
+
+### 7. 🛡️ 前端抗强缓存与版本追踪
+- 前端静态构建资源全面引入指纹哈希，SPA 路由严密配置 `Cache-Control: no-cache, no-store, must-revalidate`，杜绝更新后浏览器磁盘强缓存加载旧脚本的问题。
+- 侧边栏与系统设置页常驻版本状态与构建信息。
+
+---
+
+## 🛠️ 便捷脚本支持
+
+根目录内置了多套一键运维脚本，开箱即用：
+
+| 脚本文件 | 说明 |
+| :--- | :--- |
+| `start.bat` | **本地极速启动**：自动激活虚拟环境并启动 Uvicorn 后端服务 |
+| `start_docker.bat` | **Docker 启动**：一键启动 Docker Compose 容器集群 |
+| `backup.bat` | **安全备份**：一键将本地最新代码与提交同步推送至 GitHub 个人仓库 |
+| `rollback.bat` | **安全回退**：发生异常时交互式快速回退至稳定历史版本 |
+
+---
+
+## 🚀 快速上手
+
+### 环境要求
+- **Python** 3.11+
+- **Node.js** 18+ 与 npm
+- **Chromium / Camoufox** 依赖（使用浏览器模式注册或验活时需要）
+- 可选本地代理软件（如 Clash / FlClash / Mihomo 等）
+
+### 1. 本地部署运行
 
 ```bash
+# 1. 克隆代码仓库
+git clone https://github.com/SeiShonagon520/FreeGPT-Manager.git
+cd FreeGPT-Manager
+
+# 2. 创建并激活 Python 虚拟环境
 python -m venv .venv
-
-# Windows PowerShell
+# Windows:
 .\.venv\Scripts\Activate.ps1
-
-# Linux / macOS
+# Linux / macOS:
 source .venv/bin/activate
 
+# 3. 安装后端依赖
 pip install -r requirements.txt
 
+# 4. 构建前端产物
 cd frontend
 npm ci
 npm run build
 cd ..
 
+# 5. 配置环境变量
+cp .env.example .env
+# 编辑 .env 设置 APP_PASSWORD
+
+# 6. 启动后端服务
 python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
-浏览器访问 <http://127.0.0.1:8000>。前端开发模式：
+启动后在浏览器打开 `http://127.0.0.1:8000` 即可进入管理面板。
+
+---
+
+### 2. Docker 部署
 
 ```bash
-cd frontend
-npm run dev
+# 启动所有容器服务
+docker compose up -d --build
 ```
 
-## Docker
+---
 
-```bash
-docker compose up --build
-```
-
-Docker Compose 会启动 API、前端静态资源和项目配置的可选依赖。浏览器、Mihomo 和邮箱服务是否启用，取决于本地配置和部署环境。
-
-## 基本配置
-
-```bash
-cp .env.example .env
-```
-
-至少设置一个随机的 `APP_PASSWORD`，再在管理界面配置：
-
-1. 注册邮箱 provider 和邮箱池凭据；
-2. 验证码 provider；
-3. Mihomo 订阅或动态代理 API；
-4. 默认注册方式和执行方式；
-5. 数据库、加密密钥和任务并发参数。
-
-示例：
-
-```env
-APP_PASSWORD=<请使用密码管理器生成的随机值>
-ACCOUNT_MANAGER_DATABASE_URL=sqlite:///./data/account_manager.db
-BACKGROUND_JOBS_ENABLED=0
-APP_RUNTIME_MODE=desktop
-```
-
-更多字段和 provider 配置见 [docs/configuration.md](docs/configuration.md)。
-
-## 目录结构
+## 📁 目录结构
 
 ```text
-api/                    FastAPI 路由：账号、任务、配置、邮箱、代理
-application/            任务编排和应用服务
-core/                   数据库、配置、凭据加密、邮箱抽象和通用逻辑
-infrastructure/         repository、provider 定义和持久化实现
-platforms/chatgpt/      协议注册、浏览器注册、验活、登录恢复和 2FA
-frontend/               React + Vite 管理界面
-tests/                  单元测试和集成测试
-docs/                   配置、发布和贡献说明
+FreeGPT-Manager/
+├── api/                    # FastAPI 路由层（账号、任务、系统配置、邮箱、代理池）
+├── application/            # 核心业务应用编排与服务
+├── core/                   # 数据库 ORM、加密组件、通用工具类
+├── infrastructure/         # 数据持久化 Repository 与 Provider 实现
+├── platforms/chatgpt/      # 协议注册、Camoufox 浏览器注册、401 恢复与 2FA
+├── frontend/               # React 18 + Vite + Tailwind CSS 前端工程
+│   ├── src/pages/          # 账号管理、微软邮箱池、任务中心、设置等页面
+│   └── src/components/     # 批量操作栏、状态徽标、倒计时组件等
+├── static/                 # 前端编译生成的静态资源目录
+├── tests/                  # 自动化端到端测试与单元测试套件
+├── docs/                   # 深度配置与架构文档
+├── start.bat               # 本地快速启动脚本
+├── backup.bat              # 代码一键备份脚本
+└── docker-compose.yml      # Docker 编排文件
 ```
 
-## 测试与构建
+---
+
+## 🧪 自动化测试
+
+项目内置完善的自动化测试，涵盖账号生命周期、邮箱池并发测活、401 恢复流及导出等核心场景：
 
 ```bash
-# 后端测试
+# 运行全部后端测试
 pytest -q
-
-# 前端构建
-cd frontend
-npm run build
-cd ..
-
-# 检查补丁格式
-git diff --check
 ```
 
-## 数据与凭据
+---
 
-邮箱密码、refresh token、Cookie、TOTP 密钥、代理凭据和第三方 API key 请只放在本地 `.env`、数据库或 Secret 管理中，不要提交到 Git。生产环境请使用自己控制的邮箱、代理和服务配置，并定期备份数据库和加密密钥。
+## 🤝 鸣谢与致敬 (Credits)
 
-## 许可证
+- 感谢上游项目 [aBaiFreeGPT](https://github.com/asz798838958/aBaiFreeGPT) 及其作者所做出的开创性工作与开源贡献。
+- 感谢 [Camoufox](https://github.com/daijro/camoufox) 提供的强反指纹反检测浏览器内核。
 
-本项目使用 [AGPL-3.0](LICENSE)。第三方依赖仍分别受其各自许可证约束。
+---
+
+## 📄 开源许可证
+
+本项目遵循 [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE) 协议开源。
