@@ -83,6 +83,14 @@ def _load_key() -> bytes:
         return key
 
 
+def reload_key() -> bytes:
+    """Clear cached key and reload from key file or environment."""
+    global _KEY_CACHE
+    with _KEY_LOCK:
+        _KEY_CACHE = None
+    return _load_key()
+
+
 def encrypt_secret(value: object) -> str:
     text = str(value or "")
     if not text:

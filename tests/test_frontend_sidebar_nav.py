@@ -50,17 +50,19 @@ def test_sidebar_includes_general_mailbox_and_proxy_pool_settings_submenu_items(
     end = source.index("];", start)
     block = source[start:end]
 
-    assert block.count('hash: "') == 3
+    assert block.count('hash: "') == 4
     assert 'labelKey: "nav.settings.general", hash: "general"' in block
     assert 'labelKey: "nav.settings.mailbox", hash: "mailbox"' in block
     assert 'labelKey: "nav.settings.proxyPool", hash: "proxy-pool"' in block
+    assert 'labelKey: "nav.settings.backup", hash: "backup"' in block
 
     assert "currentTab" in source
     assert "/settings?tab=${item.hash}" in source
 
 
-def test_app_mounts_the_welcome_dialog():
+def test_app_welcome_dialog_component_preserved_for_upstream():
     source = APP_TSX.read_text(encoding="utf-8")
 
-    assert "WelcomeDialog" in source
+    # In FreeGPT-Manager user repo, popup is unmounted for clean UX
+    assert "<WelcomeDialog />" not in source
     assert WELCOME_DIALOG_TSX.exists()

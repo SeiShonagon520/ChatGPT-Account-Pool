@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Save } from "lucide-react";
 import Settings from "@/pages/Settings";
 import ProxyPoolSettings from "@/pages/ProxyPoolSettings";
+import BackupSettings from "@/pages/BackupSettings";
 
 /* ------------------------------------------------------------------ */
 /*  Tab definitions                                                    */
@@ -251,6 +252,10 @@ function GeneralTab({
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0"></span>
                 <span>邮箱池裂变耗尽预警与清理</span>
               </div>
+              <div className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                <span>数据库一键加密快照与跨机迁移</span>
+              </div>
             </div>
           </div>
         </div>
@@ -301,7 +306,7 @@ export default function SettingsPage({
   const { t } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab") || "general";
-  const tab = ["general", "mailbox", "proxy-pool"].includes(requestedTab)
+  const tab = ["general", "mailbox", "proxy-pool", "backup"].includes(requestedTab)
     ? requestedTab
     : "general";
 
@@ -310,11 +315,13 @@ export default function SettingsPage({
     general: t("settings.title.general"),
     mailbox: t("settings.title.mailbox"),
     "proxy-pool": t("settings.title.proxyPool"),
+    backup: t("settings.title.backup") || "数据备份与跨机迁移",
   };
   const mobileTabs = [
     { value: "general", label: t("nav.settings.general") },
     { value: "mailbox", label: t("nav.settings.mailbox") },
     { value: "proxy-pool", label: t("nav.settings.proxyPool") },
+    { value: "backup", label: t("nav.settings.backup") || "数据备份与迁移" },
   ];
 
   return (
@@ -342,6 +349,7 @@ export default function SettingsPage({
       {tab === "general" && <GeneralTab theme={theme} setTheme={setTheme} />}
       {tab === "mailbox" && <Settings />}
       {tab === "proxy-pool" && <ProxyPoolSettings />}
+      {tab === "backup" && <BackupSettings />}
     </div>
   );
 }

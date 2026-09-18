@@ -44,6 +44,7 @@ const SETTINGS_NAV_ITEMS: { labelKey: TranslationKey; hash: string }[] = [
   { labelKey: "nav.settings.general", hash: "general" },
   { labelKey: "nav.settings.mailbox", hash: "mailbox" },
   { labelKey: "nav.settings.proxyPool", hash: "proxy-pool" },
+  { labelKey: "nav.settings.backup", hash: "backup" },
 ];
 
 const NAV_ITEMS: NavItem[] = [
@@ -103,11 +104,11 @@ function Sidebar({
         {!collapsed && (
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
             <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] text-[11px] font-bold text-white">
-              A
+              F
             </div>
             <div className="flex flex-col min-w-0 flex-1">
               <span className="truncate text-sm font-semibold text-[var(--text-primary)] leading-tight">
-                aBaiAutoplus
+                FreeGPT-Manager
               </span>
               <span className="text-[10px] font-mono text-emerald-400 font-medium leading-tight">
                 v1.2.0 · 最新版
@@ -116,8 +117,8 @@ function Sidebar({
           </div>
         )}
         {collapsed && (
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent)] text-[11px] font-bold text-white" title="v1.2.0 最新版">
-            A
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent)] text-[11px] font-bold text-white" title="FreeGPT-Manager v1.2.0">
+            F
           </div>
         )}
       </div>

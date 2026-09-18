@@ -65,6 +65,7 @@ from api.account_checks import router as account_checks_router
 from api.accounts import router as accounts_router
 from api.actions import router as actions_router
 from api.auth import router as auth_router
+from api.backup import router as backup_router
 from api.config import router as config_router
 from core.auth import AuthMiddleware
 from api.health import router as health_router
@@ -127,6 +128,7 @@ app.include_router(accounts_router, prefix="/api")
 app.include_router(account_checks_router, prefix="/api")
 app.include_router(actions_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
+app.include_router(backup_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
 app.include_router(microsoft_mailboxes_router, prefix="/api")
