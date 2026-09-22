@@ -44,7 +44,7 @@ from .oauth import OAuthStart, generate_oauth_url, submit_callback_url
 _logger = logging.getLogger(__name__)
 
 
-_OAUTH_INIT_MAX_ATTEMPTS = 6
+_OAUTH_INIT_MAX_ATTEMPTS = int(os.environ.get("CHATGPT_PROTOCOL_MAX_ATTEMPTS", 3))
 _OAUTH_INIT_RETRY_BASE_SECONDS = 0.75
 _OAUTH_INIT_RETRY_MAX_SECONDS = 8.0
 _TRANSIENT_CURL_CODES = frozenset(

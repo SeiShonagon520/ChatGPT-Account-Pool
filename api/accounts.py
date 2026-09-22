@@ -309,8 +309,14 @@ async def import_accounts_file(
 ):
     if not file:
         raise HTTPException(400, "请选择文件")
-    payload = await file.read(10 * 1024 * 1024)
-    text = payload.decode("utf-8", errors="ignore")
+    payload = await file.read(20 * 1024 * 1024)
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = payload.decode("gbk")
+        except UnicodeDecodeError:
+            text = payload.decode("utf-8", errors="ignore")
     lines = text.splitlines()
     result = service.import_accounts(platform, lines)
 

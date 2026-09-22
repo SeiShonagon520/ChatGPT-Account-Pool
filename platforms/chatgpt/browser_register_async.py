@@ -133,6 +133,9 @@ async def _hard_proxy_block_reason(page) -> str:
 async def _is_cloudflare_challenge(page) -> bool:
     """检测页面是否是 Cloudflare 挑战页（"Just a moment..." 等）。"""
     try:
+        url = str(page.url or "").lower()
+        if "__cf_chl" in url or "challenge-platform" in url:
+            return True
         snapshot = await _page_snapshot(page)
         combined = f"{snapshot['title']} {snapshot['body']}".lower()
         return any(marker in combined for marker in _CLOUDFLARE_MARKERS)
@@ -140,22 +143,139 @@ async def _is_cloudflare_challenge(page) -> bool:
         return False
 
 
-async def _wait_cloudflare_pass(page, log, timeout: int = 30) -> bool:
-    """等待 Cloudflare 挑战自动通过（camoufox 是真实浏览器，几秒内完成 JS 挑战）。"""
+def _safe_log(log_fn, message: str, **kwargs: Any) -> None:
+    if not log_fn:
+        return
+    try:
+        log_fn(message, **kwargs)
+    except TypeError:
+        try:
+            log_fn(message)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+async def _perform_turnstile_click(page, box: dict[str, float], log) -> bool:
+    try:
+        # Checkbox 位于 Turnstile 小组件左侧约 35-45px 处
+        cx = box["x"] + min(45.0, max(20.0, box["width"] / 4.0))
+        cy = box["y"] + (box["height"] / 2.0)
+
+        # 模拟人类轨迹：先从页面随机位置移动，再平滑靠近
+        w = page.viewport_size or {"width": 1280, "height": 720}
+        cur_x = random.randint(100, max(150, int(w["width"]) - 100))
+        cur_y = random.randint(100, max(150, int(w["height"]) - 100))
+        await page.mouse.move(cur_x, cur_y)
+        await asyncio.sleep(random.uniform(0.05, 0.15))
+
+        steps = random.randint(8, 14)
+        for i in range(steps):
+            t = (i + 1) / steps
+            mid_x = cur_x + (cx - cur_x) * t + random.randint(-8, 8)
+            mid_y = cur_y + (cy - cur_y) * t + random.randint(-4, 4)
+            await page.mouse.move(mid_x, mid_y)
+            await asyncio.sleep(random.uniform(0.02, 0.04))
+
+        target_x = cx + random.uniform(-3.0, 3.0)
+        target_y = cy + random.uniform(-3.0, 3.0)
+        await page.mouse.move(target_x, target_y)
+        await asyncio.sleep(random.uniform(0.1, 0.2))
+        await page.mouse.down()
+        await asyncio.sleep(random.uniform(0.08, 0.15))
+        await page.mouse.up()
+        _safe_log(log, f"✅ 点击 Cloudflare Turnstile checkbox 坐标: ({target_x:.0f}, {target_y:.0f})")
+        return True
+    except Exception as exc:
+        _safe_log(log, f"执行 Turnstile 点击失败: {exc}", level="warning")
+        return False
+
+
+async def _try_click_turnstile_checkbox(page, log) -> bool:
+    """尝试定位 Cloudflare Turnstile 并模拟人类鼠标点击复选框（支持内联 DOM 及 iframe 两种渲染模式）。"""
+    try:
+        # 1. 优先检测 Cloudflare 顶层内嵌 Managed Challenge (如 auth.openai.com)
+        box = await page.evaluate('''() => {
+            const inp = document.querySelector('input[name="cf-turnstile-response"]');
+            if (inp) {
+                let el = inp.parentElement;
+                while (el && el !== document.body) {
+                    const r = el.getBoundingClientRect();
+                    if (r.width > 20 && r.height > 20 && r.y >= 0) {
+                        return { x: r.x, y: r.y, width: r.width, height: r.height };
+                    }
+                    el = el.parentElement;
+                }
+            }
+            const grid = document.querySelector('div[style*="display: grid"], #challenge-stage, .main-content div[id]');
+            if (grid) {
+                const r = grid.getBoundingClientRect();
+                if (r.width > 20 && r.height > 20 && r.y >= 0) {
+                    return { x: r.x, y: r.y, width: r.width, height: r.height };
+                }
+            }
+            return null;
+        }''')
+        if isinstance(box, dict) and box.get("width", 0) > 20 and box.get("height", 0) > 20:
+            return await _perform_turnstile_click(page, box, log)
+
+        # 2. 尝试从 page.frames 寻找 iframe 挑战
+        for frame in page.frames:
+            if "challenges.cloudflare.com" in str(frame.url or "").lower():
+                try:
+                    iframe_el = await frame.frame_element()
+                    if iframe_el:
+                        b = await iframe_el.bounding_box()
+                        if b and b["width"] > 10 and b["height"] > 10 and b["y"] >= 0:
+                            return await _perform_turnstile_click(page, b, log)
+                except Exception:
+                    pass
+
+        # 3. 尝试从 DOM selector 寻找 iframe
+        locators = [
+            page.locator('iframe[src*="challenges.cloudflare.com"]'),
+            page.locator('iframe[title*="Cloudflare security challenge"]'),
+            page.locator('iframe[title*="Turnstile"]'),
+            page.locator('iframe[title*="security challenge"]'),
+        ]
+        for loc in locators:
+            try:
+                count = await loc.count()
+                for idx in range(count):
+                    el = loc.nth(idx)
+                    if await el.is_visible():
+                        b = await el.bounding_box()
+                        if b and b["width"] > 10 and b["height"] > 10 and b["y"] >= 0:
+                            return await _perform_turnstile_click(page, b, log)
+            except Exception:
+                pass
+    except Exception as exc:
+        _safe_log(log, f"Turnstile 识别异常: {exc}", level="debug")
+    return False
+
+
+async def _wait_cloudflare_pass(page, log, timeout: int = 45) -> bool:
+    """等待 Cloudflare 挑战通过（支持自动 JS 挑战及主动点击 Turnstile checkbox）。"""
     if not await _is_cloudflare_challenge(page):
         return True
-    log("检测到 Cloudflare 挑战，等待自动通过...", level="warning")
+    _safe_log(log, "检测到 Cloudflare 挑战，等待验证通过...", level="warning")
     deadline = time.time() + timeout
+    last_click_at = 0.0
     while time.time() < deadline:
-        await asyncio.sleep(3)
+        await asyncio.sleep(1.5)
         hard_block = await _hard_proxy_block_reason(page)
         if hard_block:
-            log(hard_block, level="warning")
+            _safe_log(log, hard_block, level="warning")
             return False
         if not await _is_cloudflare_challenge(page):
-            log("Cloudflare 挑战已通过")
+            _safe_log(log, "Cloudflare 挑战已通过")
             return True
-    log("Cloudflare 挑战超时未通过", level="warning")
+        now = time.time()
+        if now - last_click_at >= 4.0:
+            last_click_at = now
+            await _try_click_turnstile_checkbox(page, log)
+    _safe_log(log, "Cloudflare 挑战超时未通过", level="warning")
     return False
 
 
@@ -177,11 +297,17 @@ async def _goto_with_retry(page, url: str, *, log, timeout: int = 45000, attempt
                     f"title={snapshot['title']!r} body={snapshot['body'][:240]!r}"
                 )
             if status in {403, 407, 429} or status >= 500:
-                snapshot = await _page_snapshot(page)
-                raise BrowserProxyBlockedError(
-                    f"ChatGPT 登录页 HTTP {status}; title={snapshot['title']!r} "
-                    f"body={snapshot['body'][:240]!r}"
+                email_selector = await _wait_for_any_selector(
+                    page,
+                    EMAIL_INPUT_SELECTORS,
+                    timeout=5,
                 )
+                if not email_selector:
+                    snapshot = await _page_snapshot(page)
+                    raise BrowserProxyBlockedError(
+                        f"ChatGPT 登录页 HTTP {status}; title={snapshot['title']!r} "
+                        f"body={snapshot['body'][:240]!r}"
+                    )
             log(f"ChatGPT 登录页已加载: HTTP {status or 'unknown'}")
             return response
         except BrowserProxyBlockedError:
@@ -320,24 +446,37 @@ async def _derive_stage_from_page(page) -> str:
     path = parsed.path
 
     cookies = await _get_cookies(page)
-    if "chatgpt.com" in host and cookies.get(_SESSION_COOKIE_NAME):
+    if "chatgpt.com" in host and (
+        cookies.get(_SESSION_COOKIE_NAME)
+        or cookies.get("next-auth.session-token")
+        or cookies.get("__Secure-next-auth.session-token")
+    ):
         return "complete"
 
     if "chatgpt.com" in host:
         if "login" in path or "signup" in path:
             return "entry"
-        if path in {"", "/"}:
+        if path in {"", "/"} or path.startswith(("/c/", "/g/")):
             return "complete"
 
     if "auth.openai.com" in host:
         if "about-you" in path:
             return "about_you"
-        if "email-verification" in path or "signup" in path or "verify" in path:
+        if (
+            "email-verification" in path
+            or "signup" in path
+            or "verify" in path
+            or "mfa" in path
+            or "two-factor" in path
+            or "2fa" in path
+            or "challenge" in path
+            or "authenticator" in path
+        ):
             if await _find_visible_selector(page, PASSWORD_INPUT_SELECTORS):
                 return "password"
             if await _find_visible_selector(page, OTP_INPUT_SELECTORS):
                 return "otp"
-            return "email_verification"
+            return "otp" if any(m in path for m in ("mfa", "two-factor", "2fa", "authenticator")) else "email_verification"
 
     if await _find_visible_selector(page, PASSWORD_INPUT_SELECTORS):
         return "password"
@@ -661,7 +800,11 @@ async def _browser_registration_flow(
 
     async def open_registration_entry() -> bool:
         await _goto_with_retry(page, f"{CHATGPT_APP}/auth/login", log=log)
-        await asyncio.sleep(1.5)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass
+        await asyncio.sleep(2.0)
 
         email_selector = await _wait_for_any_selector(page, EMAIL_INPUT_SELECTORS, timeout=12)
         if not email_selector:
@@ -677,6 +820,7 @@ async def _browser_registration_flow(
 
         await _fill_input_like_user(page, email_selector, email)
         log(f"登录页已填邮箱: {email_selector}")
+        await asyncio.sleep(1.0)
         submit = await _click_first(page, EMAIL_SUBMIT_SELECTORS, timeout=5)
         if not submit:
             await _submit_visible_form(page, email_selector)
@@ -688,9 +832,19 @@ async def _browser_registration_flow(
         # Once the password/OTP stage appears the worker mostly waits on
         # network and mailbox I/O, so it no longer needs scarce startup slots.
         entry_deadline = time.time() + 45
+        attempts_while_waiting = 0
         while time.time() < entry_deadline:
             if await _derive_stage_from_page(page) != "entry":
                 break
+            attempts_while_waiting += 1
+            if attempts_while_waiting in (3, 6, 10):
+                curr_inp = await _wait_for_any_selector(page, EMAIL_INPUT_SELECTORS, timeout=2)
+                if curr_inp:
+                    await _fill_input_like_user(page, curr_inp, email)
+                    await asyncio.sleep(0.5)
+                submit_retry = await _click_first(page, EMAIL_SUBMIT_SELECTORS, timeout=2)
+                if not submit_retry and curr_inp:
+                    await _submit_visible_form(page, curr_inp)
             await asyncio.sleep(2)
         if await _derive_stage_from_page(page) == "entry":
             hard_block = await _hard_proxy_block_reason(page)
@@ -731,9 +885,10 @@ async def _browser_registration_flow(
         log(f"注册推进 step={step + 1} stage={stage} url={current_url} seen={seen[stage]}")
         # OTP and email verification use explicit elapsed-time deadlines below.
         # Count-based limits are too sensitive to scheduler speed at 30-way load.
+        stage_limit = 15 if stage == "unknown" else 4
         if (
             stage not in {"password", "otp", "email_verification", "cloudflare"}
-            and seen[stage] > 4
+            and seen[stage] > stage_limit
         ):
             if stage in {"entry", "blocked", "unknown"}:
                 snapshot = await _page_snapshot(page)
@@ -752,7 +907,7 @@ async def _browser_registration_flow(
             # Cloudflare 挑战页：等待自动通过，不计入普通卡住判定（放宽到 12 次约 60s）
             if seen[stage] > 12:
                 raise BrowserProxyBlockedError(f"Cloudflare 挑战持续未通过: {current_url}")
-            if not await _wait_cloudflare_pass(page, log, timeout=30):
+            if not await _wait_cloudflare_pass(page, log, timeout=45):
                 raise BrowserProxyBlockedError(
                     f"Cloudflare 挑战未通过或代理被拒绝: {current_url}"
                 )
@@ -804,6 +959,9 @@ async def _browser_registration_flow(
                     f"密码设置页 60 秒未完成: url={current_url}"
                 )
             if password_submitted:
+                err = await _auth_error_text(page)
+                if err:
+                    raise RuntimeError(f"密码提交报错: {err}")
                 submitted_at = password_submitted_at or now
                 elapsed = now - submitted_at
                 if elapsed >= 45:
@@ -831,7 +989,7 @@ async def _browser_registration_flow(
             if not selector:
                 continue
             await _fill_input_like_user(page, selector, password)
-            log("已填注册密码")
+            log(f"已填{action_desc}密码")
             if not await _click_first(page, PASSWORD_SUBMIT_SELECTORS, timeout=6):
                 await _submit_visible_form(page, selector)
                 log("密码页已用 Enter 提交")
@@ -868,6 +1026,9 @@ async def _browser_registration_flow(
             # Once a code was submitted, never poll/fill it again; wait for
             # the next URL instead of reusing a stale OTP on about-you.
             if otp_submitted:
+                err = await _auth_error_text(page)
+                if err:
+                    raise RuntimeError(f"验证码提交报错: {err}")
                 submitted_at = (
                     otp_submitted_at
                     if otp_submitted_at is not None
@@ -888,7 +1049,7 @@ async def _browser_registration_flow(
                 continue
             if not otp_callback:
                 raise RuntimeError("注册需要邮箱验证码但未提供 otp_callback")
-            log("等待邮箱验证码...")
+            log(f"等待{'TOTP ' if is_login else '邮箱'}验证码...")
             # OTP 轮询是同步阻塞的，丢到线程池避免阻塞事件循环里其他 context
             code = str(await asyncio.to_thread(otp_callback) or "").strip()
             if not code:

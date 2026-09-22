@@ -280,6 +280,7 @@ export default function MicrosoftMailboxes() {
     invalid: number
   } | null>(null)
   const [clearingDisabled, setClearingDisabled] = useState(false)
+  const [togglingEmail, setTogglingEmail] = useState<string | null>(null)
 
   const loadStats = () => {
     apiFetch('/microsoft-mailboxes/stats')
@@ -428,6 +429,28 @@ export default function MicrosoftMailboxes() {
       setError(err?.message || '删除邮箱失败')
     } finally {
       setDeletingEmail(null)
+    }
+  }
+
+  const handleToggleStatus = async (email: string, currentStatus: string) => {
+    const nextStatus = currentStatus === 'disabled' ? 'available' : 'disabled'
+    const actionText = nextStatus === 'available' ? '启用' : '禁用'
+    setTogglingEmail(email)
+    try {
+      const res = await apiFetch(`/microsoft-mailboxes/${encodeURIComponent(email)}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: nextStatus }),
+      })
+      if (res.stats) {
+        setStats(res.stats)
+      }
+      setMailboxes(prev =>
+        prev.map(mb => (mb.email === email ? { ...mb, status: res.status } : mb))
+      )
+    } catch (err: any) {
+      setError(err?.message || `${actionText}邮箱失败`)
+    } finally {
+      setTogglingEmail(null)
     }
   }
 
@@ -710,6 +733,31 @@ export default function MicrosoftMailboxes() {
                         >
                           <Search className="h-3.5 w-3.5" />
                           查信
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleToggleStatus(mb.email, mb.status)}
+                          disabled={togglingEmail === mb.email}
+                          title={mb.status === 'disabled' ? '启用该邮箱' : '禁用该邮箱'}
+                          className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-xs disabled:opacity-50 ${
+                            mb.status === 'disabled'
+                              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                              : 'border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
+                          }`}
+                        >
+                          {togglingEmail === mb.email ? (
+                            '…'
+                          ) : mb.status === 'disabled' ? (
+                            <>
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              启用
+                            </>
+                          ) : (
+                            <>
+                              <AlertOctagon className="h-3.5 w-3.5" />
+                              禁用
+                            </>
+                          )}
                         </button>
                         <button
                           type="button"

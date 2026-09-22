@@ -47,6 +47,10 @@ PLATFORM_CREDENTIAL_TYPES: dict[str, str] = {
     "cookie": "cookie",
     "api_key": "secret",
     "totp_secret": "secret",
+    "2fa": "secret",
+    "phone": "credential",
+    "chatgpt_account_id": "identifier",
+    "oai_did": "identifier",
     "wos_session": "token",
     "sso": "cookie",
     "sso_rw": "cookie",
@@ -330,6 +334,9 @@ def _platform_credentials_from_extra(extra: dict[str, Any], *, legacy_token: str
     for key in PLATFORM_CREDENTIAL_TYPES:
         if key in extra:
             push(key, extra.get(key), source="accounts.extra")
+    creds_dict = _safe_dict(extra.get("credentials"))
+    for key, value in creds_dict.items():
+        push(key, value, source="accounts.credentials")
 
     primary_key = _default_primary_token_key(_text(extra.get("platform")))
     if any(item["key"] == primary_key for item in rows):
@@ -928,7 +935,13 @@ def patch_account_graph(
     current = _graph_for_account(session, account_id)
     summary = _safe_dict(current.get("overview"))
     if summary_updates:
-        summary.update(summary_updates)
+        if "legacy_extra" in summary_updates and "legacy_extra" in summary:
+            merged_legacy = dict(_safe_dict(summary.get("legacy_extra")))
+            merged_legacy.update(_safe_dict(summary_updates["legacy_extra"]))
+            summary.update(summary_updates)
+            summary["legacy_extra"] = merged_legacy
+        else:
+            summary.update(summary_updates)
     if cashier_url is not None:
         summary["cashier_url"] = cashier_url
     if region is not None:

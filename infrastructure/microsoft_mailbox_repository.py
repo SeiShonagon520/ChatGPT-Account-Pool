@@ -469,25 +469,37 @@ class MicrosoftMailboxRepository:
             ).first()
         return self._record(row) if row is not None else None
 
+    def set_status(self, email: str, status: str) -> bool:
+        """Update mailbox status between 'available' and 'disabled'."""
+        key = _email_key(email)
+        target = str(status or "").strip().lower()
+        if not key or target not in {"available", "disabled"}:
+            return False
+        now = _utcnow()
+        with Session(engine) as session:
+            mailbox = session.exec(
+                select(MicrosoftMailboxModel).where(
+                    MicrosoftMailboxModel.email_key == key
+                )
+            ).first()
+            if mailbox is None:
+                return False
+            if target == "disabled":
+                mailbox.status = "disabled"
+            else:
+                mailbox.status = (
+                    "exhausted"
+                    if int(mailbox.use_count or 0) >= int(mailbox.max_uses or 1)
+                    else "available"
+                )
+            mailbox.updated_at = now
+            session.add(mailbox)
+            session.commit()
+            return True
+
     def disable(self, email: str) -> bool:
         """Permanently remove a mailbox with unusable credentials from allocation."""
-        key = _email_key(email)
-        if not key:
-            return False
-        now = _utcnow().isoformat()
-        statement = text(
-            """
-            UPDATE microsoft_mailboxes
-            SET status = 'disabled', updated_at = :updated_at
-            WHERE email_key = :email_key AND status != 'disabled'
-            """
-        )
-        with engine.begin() as connection:
-            result = connection.execute(
-                statement,
-                {"email_key": key, "updated_at": now},
-            )
-        return bool(result.rowcount)
+        return self.set_status(email, "disabled")
 
     def delete_by_email(self, email: str) -> bool:
         key = _email_key(email)

@@ -104,21 +104,21 @@ function Sidebar({
         {!collapsed && (
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
             <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] text-[11px] font-bold text-white">
-              F
+              C
             </div>
             <div className="flex flex-col min-w-0 flex-1">
               <span className="truncate text-sm font-semibold text-[var(--text-primary)] leading-tight">
-                FreeGPT-Manager
+                ChatGPT-Account-Pool
               </span>
               <span className="text-[10px] font-mono text-emerald-400 font-medium leading-tight">
-                v1.2.0 · 最新版
+                v2.0.0 · 最新版
               </span>
             </div>
           </div>
         )}
         {collapsed && (
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent)] text-[11px] font-bold text-white" title="FreeGPT-Manager v1.2.0">
-            F
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent)] text-[11px] font-bold text-white" title="ChatGPT-Account-Pool v2.0.0">
+            C
           </div>
         )}
       </div>
@@ -326,10 +326,10 @@ function LoginScreen({ onLogin }: { onLogin: (token: string) => void }) {
       >
         <div className="flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--accent)] text-sm font-bold text-white">
-            A
+            C
           </div>
           <h1 className="text-base font-semibold text-[var(--text-primary)]">
-            aBaiAutoplus
+            ChatGPT-Account-Pool
           </h1>
         </div>
         <p className="text-sm text-[var(--text-muted)]">{t("login.prompt")}</p>

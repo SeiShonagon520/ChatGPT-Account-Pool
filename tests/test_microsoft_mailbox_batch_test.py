@@ -102,3 +102,52 @@ def test_clear_disabled_mailboxes(client):
     items = list_resp.json()["items"]
     assert len(items) == 1
     assert items[0]["email"] == "user1@outlook.com"
+
+
+def test_update_mailbox_status(client):
+    repo = MicrosoftMailboxRepository()
+    repo.import_entries(
+        parse_local_ms_pool_rows(_row(1)),
+        max_uses=6,
+    )
+
+    # Initially available
+    rec = repo.get_by_parent_email("user1@outlook.com")
+    assert rec.status == "available"
+
+    # Disable via PATCH API
+    resp = client.patch(
+        "/api/microsoft-mailboxes/user1@outlook.com/status",
+        json={"status": "disabled"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["status"] == "disabled"
+    assert data["stats"]["disabled"] == 1
+
+    # Re-enable via PATCH API
+    resp = client.patch(
+        "/api/microsoft-mailboxes/user1@outlook.com/status",
+        json={"status": "available"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["status"] == "available"
+    assert data["stats"]["disabled"] == 0
+
+    # Invalid status should return 400
+    resp = client.patch(
+        "/api/microsoft-mailboxes/user1@outlook.com/status",
+        json={"status": "invalid_status"},
+    )
+    assert resp.status_code == 400
+
+    # Non-existent mailbox should return 404
+    resp = client.patch(
+        "/api/microsoft-mailboxes/nonexistent@outlook.com/status",
+        json={"status": "available"},
+    )
+    assert resp.status_code == 404
+

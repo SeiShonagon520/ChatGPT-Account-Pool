@@ -48,6 +48,7 @@ EMAIL_INPUT_SELECTORS = [
 PASSWORD_INPUT_SELECTORS = [
     'input[type="password"]',
     'input[name="password"]',
+    'input[autocomplete="current-password"]',
     'input[autocomplete="new-password"]',
 ]
 
@@ -68,11 +69,18 @@ PASSWORD_SUBMIT_SELECTORS = [
     'button[data-testid="continue-button"]',
     'button:has-text("Continue")',
     'button:has-text("continue")',
+    'button:has-text("Log in")',
+    'button:has-text("Sign in")',
+    'button:has-text("Submit")',
+    'button:has-text("Verify")',
+    'button:has-text("verify")',
     'button:has-text("Create account")',
     'button:has-text("create account")',
     'button:has-text("Sign up")',
     'button:has-text("创建账号")',
     'button:has-text("注册")',
+    'button:has-text("登录")',
+    'button:has-text("验证")',
 ]
 
 # OpenAI now defaults new email signups to a passwordless OTP flow.  The
@@ -89,6 +97,14 @@ OTP_INPUT_SELECTORS = [
     "input[type='tel']",
     "input[name*='code' i]",
     "input[id*='code' i]",
+    "input[name*='otp' i]",
+    "input[id*='otp' i]",
+    "input[name*='totp' i]",
+    "input[id*='totp' i]",
+    "input[name*='mfa' i]",
+    "input[id*='mfa' i]",
+    "input[placeholder*='code' i]",
+    "input[aria-label*='code' i]",
 ]
 
 SIGNUP_ENTRY_SELECTORS = [
@@ -295,7 +311,11 @@ def _derive_stage_from_page(page) -> str:
 
     # 已登录：chatgpt.com 且存在 session cookie
     cookies = _get_cookies(page)
-    if "chatgpt.com" in host and cookies.get(_SESSION_COOKIE_NAME):
+    if "chatgpt.com" in host and (
+        cookies.get(_SESSION_COOKIE_NAME)
+        or cookies.get("next-auth.session-token")
+        or cookies.get("__Secure-next-auth.session-token")
+    ):
         return "complete"
 
     if "chatgpt.com" in host:
@@ -306,19 +326,27 @@ def _derive_stage_from_page(page) -> str:
         # cookie list immediately.  Let the session endpoint be the source of
         # truth; _fetch_session_via_page will verify that an access token is
         # actually available before the flow is marked complete.
-        if path in {"", "/"}:
+        if path in {"", "/"} or path.startswith(("/c/", "/g/")):
             return "complete"
 
     if "auth.openai.com" in host:
         if "about-you" in path:
             return "about_you"
-        if "email-verification" in path or "signup" in path or "verify" in path:
-            # 当前流程：email-verification 页直接要 6 位邮箱验证码
+        if (
+            "email-verification" in path
+            or "signup" in path
+            or "verify" in path
+            or "mfa" in path
+            or "two-factor" in path
+            or "2fa" in path
+            or "challenge" in path
+            or "authenticator" in path
+        ):
             if _find_visible_selector(page, PASSWORD_INPUT_SELECTORS):
                 return "password"
             if _find_visible_selector(page, OTP_INPUT_SELECTORS):
                 return "otp"
-            return "email_verification"
+            return "otp" if any(m in path for m in ("mfa", "two-factor", "2fa", "authenticator")) else "email_verification"
         # 非识别路径，落到选择器兜底
 
     # 兜底：看可见输入框类型

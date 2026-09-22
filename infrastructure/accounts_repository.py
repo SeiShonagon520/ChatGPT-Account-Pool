@@ -308,7 +308,7 @@ class AccountsRepository:
                 chunk_models = session.exec(
                     select(AccountModel).where(
                         AccountModel.platform == platform,
-                        AccountModel.email.in_(chunk),
+                        func.lower(AccountModel.email).in_(chunk),
                     )
                 ).all()
                 for m in chunk_models:
@@ -316,10 +316,14 @@ class AccountsRepository:
 
             for email_key, line in unique_lines.items():
                 try:
+                    extra = dict(line.extra or {})
+                    user_id = str(extra.get("chatgpt_account_id") or extra.get("account_id") or "").strip()
                     if email_key in existing_map:
                         model = existing_map[email_key]
                         if line.password:
                             model.password = line.password
+                        if user_id and not model.user_id:
+                            model.user_id = user_id
                         model.updated_at = datetime.now(timezone.utc)
                         session.add(model)
                         session.commit()
@@ -330,6 +334,7 @@ class AccountsRepository:
                             platform=platform,
                             email=line.email,
                             password=line.password,
+                            user_id=user_id,
                         )
                         session.add(model)
                         session.commit()
@@ -342,7 +347,6 @@ class AccountsRepository:
                         except Exception:
                             pass
 
-                    extra = dict(line.extra or {})
                     summary_updates = dict(extra.get("overview") or extra.get("summary") or {})
                     for key in ("trial_end_time", "cashier_url", "region", "remote_email", "checked_at"):
                         if key in extra and key not in summary_updates:
@@ -388,12 +392,23 @@ class AccountsRepository:
                         "sso_rw",
                         "totp_secret",
                         "auth_type",
+                        "chatgpt_account_id",
+                        "account_id",
+                        "phone",
+                        "oai_did",
+                        "client_id",
+                        "clientId",
+                        "organization_id",
+                        "workspace_id",
+                        "agent_identity",
+                        "share_token",
+                        "model_mapping",
                     ):
                         if key in extra and key not in credential_updates:
                             credential_updates[key] = extra[key]
                     primary_token = extra.get("primary_token")
                     if primary_token in (None, ""):
-                        primary_token = extra.get("token")
+                        primary_token = extra.get("token") or extra.get("access_token")
                     patch_account_graph(
                         session,
                         model,

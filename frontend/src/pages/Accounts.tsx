@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CheckCircle2, CheckSquare, ChevronLeft, ChevronRight, Copy, Download, Mail, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X } from 'lucide-react'
+import { CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Download, Edit, ExternalLink, Eye, EyeOff, Mail, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -492,7 +492,7 @@ function ImportAccountsDialog({
           <div>
             <h2 className="text-base font-semibold text-[var(--text-primary)]">导入 ChatGPT 账号</h2>
             <p className="mt-1 text-xs text-[var(--text-muted)]">
-              支持直接粘贴或上传卡密 TXT，自动识别微软长效邮箱、2FA 密钥并完成持久化绑定。
+              支持直接粘贴或上传卡密 TXT、JSON、Sub2API 导出文件 (.json/.sub) 或订阅链接，自动识别微软长效邮箱、2FA 密钥并持久化绑定。
             </p>
           </div>
           <button
@@ -560,20 +560,20 @@ function ImportAccountsDialog({
                     : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
                 }`}
               >
-                📄 文件上传 (.txt)
+                📄 文件上传 (.txt / .json / .sub)
               </button>
             </div>
 
             {inputMode === 'text' ? (
               <div>
                 <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
-                  <span>卡密格式：每行一个账号</span>
+                  <span>卡密 / JSON / 订阅内容</span>
                   <span>有效行数：{textLinesCount}</span>
                 </div>
                 <textarea
                   value={text}
                   onChange={e => setText(e.target.value)}
-                  placeholder={`支持如下常见格式（自动识别 ----、制表符、逗号、冒号）：\n\n邮箱----密码----client_id----refresh_token（自动绑定微软长效邮箱）\n邮箱----密码----2FA密钥（自动绑定 TOTP）\n邮箱----密码`}
+                  placeholder={`支持如下常见格式（自动识别 ----、|、制表符、逗号、冒号、JSON 与 Sub 格式）：\n\n1. JSON / Sub2API 格式：\n   - Sub2API 导出 JSON：{"accounts": [{"name": "...", "credentials": {...}}]}\n   - 账号数组：[{"email": "...", "password": "...", "totp_secret": "..."}]\n   - Base64 订阅文本或订阅链接 (http/https/sub://)\n\n2. 微软长效卡密：\n   邮箱----密码----client_id----refresh_token\n\n3. 2FA 账号：\n   邮箱----密码----2FA密钥  或  邮箱|密码|2FA密钥\n\n4. 普通账号：\n   邮箱----密码  或  邮箱|密码`}
                   rows={8}
                   className="mt-1.5 w-full rounded-md border border-[var(--border)] bg-transparent p-3 font-mono text-xs text-[var(--text-primary)] focus:border-sky-500 focus:outline-none"
                 />
@@ -590,17 +590,17 @@ function ImportAccountsDialog({
                     {fileName ? (
                       <span className="font-semibold text-emerald-400">{fileName}</span>
                     ) : (
-                      '拖拽 .txt 文件到此处，或点击浏览上传'
+                      '拖拽 .txt, .json, .sub, .csv 文件到此处，或点击浏览上传'
                     )}
                   </p>
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">支持标准文本或卡密导出文件（最大 10MB）</p>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">支持标准卡密、JSON 格式、Sub2API 订阅导出文件（最大 20MB）</p>
                   <label className="mt-3 cursor-pointer">
                     <span className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--bg-hover)]">
                       选择文件
                     </span>
                     <input
                       type="file"
-                      accept=".txt,.csv"
+                      accept=".txt,.csv,.json,.sub,.jsonl,.yaml,.yml"
                       onChange={handleFileChange}
                       className="hidden"
                     />
@@ -612,9 +612,10 @@ function ImportAccountsDialog({
             <div className="rounded-md border border-[var(--border)] bg-[var(--bg-pane)]/20 p-3 text-xs text-[var(--text-muted)]">
               <div className="font-medium text-[var(--text-secondary)]">💡 格式说明：</div>
               <ul className="mt-1 list-inside list-disc space-y-0.5">
+                <li><span className="text-purple-400">JSON / Sub 订阅格式</span>：支持 Sub2API 导出 JSON、账号数组 <code>{`[{"name": "...", "credentials": {...}}]`}</code>、CPA/Any2API 或 Base64 订阅文本/链接</li>
                 <li><span className="text-sky-400">微软长效卡密</span>：<code>邮箱----密码----client_id----refresh_token</code>（持久化保存，免密码无限刷新收信）</li>
-                <li><span className="text-emerald-400">2FA 账号</span>：<code>邮箱----密码----totp_secret</code></li>
-                <li><span className="text-amber-400">普通账号</span>：<code>邮箱----密码</code></li>
+                <li><span className="text-emerald-400">2FA 账号</span>：<code>邮箱----密码----totp_secret</code>（支持 ---- 或 | 分隔）</li>
+                <li><span className="text-amber-400">普通账号</span>：<code>邮箱----密码</code>（支持 ----、|、制表符、逗号、冒号）</li>
               </ul>
             </div>
 
@@ -686,6 +687,471 @@ function ImportAccountsDialog({
   )
 }
 
+function base32Decode(base32: string): Uint8Array {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+  const clean = (base32 || '').toUpperCase().replace(/=+$/, '').replace(/\s+/g, '')
+  let bits = 0
+  let value = 0
+  const output: number[] = []
+  for (let i = 0; i < clean.length; i++) {
+    const idx = alphabet.indexOf(clean[i])
+    if (idx === -1) continue
+    value = (value << 5) | idx
+    bits += 5
+    if (bits >= 8) {
+      output.push((value >>> (bits - 8)) & 255)
+      bits -= 8
+    }
+  }
+  return new Uint8Array(output)
+}
+
+async function computeTotp(secret: string, period = 30): Promise<{ code: string; remaining: number }> {
+  const epoch = Math.floor(Date.now() / 1000)
+  const timeStep = Math.floor(epoch / period)
+  const remaining = period - (epoch % period)
+  if (!secret || !secret.trim()) {
+    return { code: '', remaining }
+  }
+  try {
+    const keyBytes = base32Decode(secret)
+    if (keyBytes.length === 0) return { code: '', remaining }
+    const cryptoKey = await window.crypto.subtle.importKey(
+      'raw',
+      keyBytes as unknown as BufferSource,
+      { name: 'HMAC', hash: 'SHA-1' },
+      false,
+      ['sign']
+    )
+    const buffer = new ArrayBuffer(8)
+    const view = new DataView(buffer)
+    view.setUint32(4, timeStep, false)
+    const signature = await window.crypto.subtle.sign('HMAC', cryptoKey, buffer)
+    const sigBytes = new Uint8Array(signature)
+    const offset = sigBytes[sigBytes.length - 1] & 0x0f
+    const binary =
+      ((sigBytes[offset] & 0x7f) << 24) |
+      ((sigBytes[offset + 1] & 0xff) << 16) |
+      ((sigBytes[offset + 2] & 0xff) << 8) |
+      (sigBytes[offset + 3] & 0xff)
+    const otp = binary % 1000000
+    return { code: String(otp).padStart(6, '0'), remaining }
+  } catch {
+    return { code: '', remaining }
+  }
+}
+
+function AccountDetailsDialog({
+  accountId,
+  onClose,
+  onUpdated,
+}: {
+  accountId: number
+  onClose: () => void
+  onUpdated: () => void
+}) {
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [copiedKey, setCopiedKey] = useState('')
+
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [totpSecret, setTotpSecret] = useState('')
+  const [showTotpSecret, setShowTotpSecret] = useState(false)
+  const [totpCode, setTotpCode] = useState('')
+  const [totpRemaining, setTotpRemaining] = useState(30)
+  const [cashierUrl, setCashierUrl] = useState('')
+  const [phone, setPhone] = useState('')
+
+  const [accessToken, setAccessToken] = useState('')
+  const [refreshToken, setRefreshToken] = useState('')
+  const [chatgptAccountId, setChatgptAccountId] = useState('')
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  useEffect(() => {
+    let mounted = true
+    setLoading(true)
+    apiFetch(`/accounts/${accountId}`)
+      .then((data: any) => {
+        if (!mounted || !data) return
+        setEmail(data.email || '')
+        setPassword(data.password || '')
+
+        const creds: Array<{ key: string; value: string }> = Array.isArray(data.credentials) ? data.credentials : []
+        const overview = data.overview || {}
+        const legacy = overview.legacy_extra || {}
+
+        const findCred = (k: string) => {
+          const item = creds.find(c => c.key === k)
+          return item ? String(item.value || '') : String(legacy[k] || '')
+        }
+
+        setTotpSecret(findCred('totp_secret') || findCred('2fa') || '')
+        setPhone(findCred('phone') || findCred('mobile') || '')
+        setCashierUrl(data.cashier_url || findCred('cashier_url') || findCred('mailbox_url') || '')
+        setAccessToken(findCred('access_token') || '')
+        setRefreshToken(findCred('refresh_token') || '')
+        setChatgptAccountId(data.user_id || findCred('chatgpt_account_id') || findCred('account_id') || '')
+      })
+      .catch((err: any) => {
+        if (mounted) setError(err?.message || '读取账号详情失败')
+      })
+      .finally(() => {
+        if (mounted) setLoading(false)
+      })
+    return () => {
+      mounted = false
+    }
+  }, [accountId])
+
+  useEffect(() => {
+    let active = true
+    const update = async () => {
+      if (!totpSecret.trim()) {
+        if (active) {
+          setTotpCode('')
+          setTotpRemaining(30)
+        }
+        return
+      }
+      const res = await computeTotp(totpSecret.trim())
+      if (active) {
+        setTotpCode(res.code)
+        setTotpRemaining(res.remaining)
+      }
+    }
+    void update()
+    const timer = setInterval(() => {
+      void update()
+    }, 1000)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [totpSecret])
+
+  const copyToClipboard = async (text: string, key: string) => {
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedKey(key)
+      setTimeout(() => setCopiedKey(''), 2000)
+    } catch {
+      // fallback
+    }
+  }
+
+  const handleSave = async (e: FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    setError('')
+    try {
+      await apiFetch(`/accounts/${accountId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          password: password,
+          cashier_url: cashierUrl.trim() || null,
+          credentials: {
+            totp_secret: totpSecret.trim(),
+            phone: phone.trim(),
+            cashier_url: cashierUrl.trim(),
+          },
+          overview: {
+            legacy_extra: {
+              totp_secret: totpSecret.trim(),
+              phone: phone.trim(),
+              cashier_url: cashierUrl.trim(),
+            },
+          },
+        }),
+      })
+      onUpdated()
+      onClose()
+    } catch (err: any) {
+      setError(err?.message || '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="max-h-[calc(100vh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-2xl">
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="text-lg font-bold text-[var(--text-primary)]">账号备注</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <p className="mt-2 text-xs text-[var(--text-muted)] leading-relaxed">
+          给 <span className="font-mono text-sky-400">{email}</span> 填写密码、2FA、邮件地址、手机号和其他备注。
+        </p>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-12 text-sm text-[var(--text-muted)]">
+            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+            加载账号数据…
+          </div>
+        ) : (
+          <form onSubmit={handleSave} className="mt-5 space-y-4">
+            {/* 邮箱 */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-[var(--text-primary)]">邮箱</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={email}
+                  readOnly
+                  className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/50 px-3.5 py-2.5 font-mono text-sm text-[var(--text-primary)] focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => void copyToClipboard(email, 'email')}
+                  title="复制邮箱"
+                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/40 p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+              </div>
+              {copiedKey === 'email' ? <span className="text-[11px] text-emerald-400">已复制邮箱</span> : null}
+            </div>
+
+            {/* 账号密码 */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-[var(--text-primary)]">账号密码</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="填写账号密码"
+                  className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3.5 py-2.5 font-mono text-sm text-[var(--text-primary)] focus:border-sky-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  title={showPassword ? '隐藏密码' : '显示密码'}
+                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/40 p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copyToClipboard(password, 'password')}
+                  title="复制密码"
+                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/40 p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+              </div>
+              {copiedKey === 'password' ? <span className="text-[11px] text-emerald-400">已复制密码</span> : null}
+            </div>
+
+            {/* 2FA 密钥 */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-[var(--text-primary)]">2FA 密钥</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type={showTotpSecret ? 'text' : 'password'}
+                  value={totpSecret}
+                  onChange={e => setTotpSecret(e.target.value.toUpperCase().replace(/\s+/g, ''))}
+                  placeholder="填写 TOTP 2FA 密钥 (Base32 格式)"
+                  className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3.5 py-2.5 font-mono text-sm uppercase text-[var(--text-primary)] focus:border-sky-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowTotpSecret(!showTotpSecret)}
+                  title={showTotpSecret ? '隐藏 2FA 密钥' : '显示 2FA 密钥'}
+                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/40 p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  {showTotpSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copyToClipboard(totpSecret, 'totp_secret')}
+                  title="复制 2FA 密钥"
+                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/40 p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* 实时验证码卡片 */}
+              <div className="flex items-center justify-between rounded-xl border border-sky-500/20 bg-sky-500/5 px-4 py-3">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-xs text-[var(--text-muted)]">当前验证码</span>
+                  <span className="font-mono text-lg font-bold tracking-widest text-[var(--text-primary)]">
+                    {totpCode || '------'}
+                  </span>
+                  {totpCode ? (
+                    <button
+                      type="button"
+                      onClick={() => void copyToClipboard(totpCode, 'totp_code')}
+                      title="复制验证码"
+                      className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-sky-400 transition-colors"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </button>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-1 text-xs font-mono text-[var(--text-muted)]">
+                  <span>{totpRemaining}秒</span>
+                </div>
+              </div>
+              {copiedKey === 'totp_code' ? <span className="text-[11px] text-emerald-400">已复制 6 位验证码</span> : null}
+              {copiedKey === 'totp_secret' ? <span className="text-[11px] text-emerald-400">已复制 2FA 密钥</span> : null}
+            </div>
+
+            {/* 邮件地址 */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-[var(--text-primary)]">邮件地址</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={cashierUrl}
+                  onChange={e => setCashierUrl(e.target.value)}
+                  placeholder="填写可打开的邮件查询网页地址"
+                  className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3.5 py-2.5 text-sm text-[var(--text-primary)] focus:border-sky-500 focus:outline-none"
+                />
+                {cashierUrl.startsWith('http') ? (
+                  <button
+                    type="button"
+                    onClick={() => window.open(cashierUrl, '_blank')}
+                    title="在浏览器新窗口打开"
+                    className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/40 p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => void copyToClipboard(cashierUrl, 'cashier_url')}
+                  title="复制邮件地址"
+                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/40 p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+              </div>
+              {copiedKey === 'cashier_url' ? <span className="text-[11px] text-emerald-400">已复制邮件地址</span> : null}
+            </div>
+
+            {/* 手机号 */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-[var(--text-primary)]">手机号</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={phone}
+                  onChange={e => setPhone(e.target.value)}
+                  placeholder="绑定手机号"
+                  className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3.5 py-2.5 font-mono text-sm text-[var(--text-primary)] focus:border-sky-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => void copyToClipboard(phone, 'phone')}
+                  title="复制手机号"
+                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/40 p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+              </div>
+              {copiedKey === 'phone' ? <span className="text-[11px] text-emerald-400">已复制手机号</span> : null}
+            </div>
+
+            {/* 高级详情折叠 */}
+            <div className="pt-2 border-t border-[var(--border)]/60">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="flex items-center justify-between w-full text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+              >
+                <span>更多参数 (Access Token / Refresh Token / Account ID)</span>
+                {showAdvanced ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </button>
+
+              {showAdvanced ? (
+                <div className="mt-3 space-y-3 rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/20 p-3 text-xs">
+                  {chatgptAccountId ? (
+                    <div>
+                      <div className="flex items-center justify-between text-[var(--text-muted)]">
+                        <span>ChatGPT Account ID</span>
+                        <button
+                          type="button"
+                          onClick={() => void copyToClipboard(chatgptAccountId, 'account_id')}
+                          className="hover:text-[var(--text-primary)]"
+                        >
+                          <Copy className="h-3 w-3" />
+                        </button>
+                      </div>
+                      <div className="mt-1 font-mono text-[11px] text-[var(--text-secondary)] break-all select-all">
+                        {chatgptAccountId}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {accessToken ? (
+                    <div>
+                      <div className="flex items-center justify-between text-[var(--text-muted)]">
+                        <span>Access Token (JWT)</span>
+                        <button
+                          type="button"
+                          onClick={() => void copyToClipboard(accessToken, 'access_token')}
+                          className="hover:text-[var(--text-primary)]"
+                        >
+                          <Copy className="h-3 w-3" />
+                        </button>
+                      </div>
+                      <div className="mt-1 font-mono text-[11px] text-[var(--text-secondary)] break-all max-h-16 overflow-y-auto select-all">
+                        {accessToken}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {refreshToken ? (
+                    <div>
+                      <div className="flex items-center justify-between text-[var(--text-muted)]">
+                        <span>Refresh Token</span>
+                        <button
+                          type="button"
+                          onClick={() => void copyToClipboard(refreshToken, 'refresh_token')}
+                          className="hover:text-[var(--text-primary)]"
+                        >
+                          <Copy className="h-3 w-3" />
+                        </button>
+                      </div>
+                      <div className="mt-1 font-mono text-[11px] text-[var(--text-secondary)] break-all max-h-16 overflow-y-auto select-all">
+                        {refreshToken}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
+            {error ? <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</div> : null}
+
+            <div className="mt-6 flex justify-end gap-3 pt-2">
+              <Button type="button" variant="outline" onClick={onClose} className="rounded-xl px-5">
+                取消
+              </Button>
+              <Button type="submit" disabled={saving} className="rounded-xl bg-sky-600 hover:bg-sky-500 text-white px-6">
+                {saving ? '保存中…' : '保存'}
+              </Button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function Accounts() {
   const navigate = useNavigate()
   const [accounts, setAccounts] = useState<AccountListItem[]>([])
@@ -701,6 +1167,7 @@ export default function Accounts() {
   const [loading, setLoading] = useState(false)
   const [showRegister, setShowRegister] = useState(false)
   const [showImport, setShowImport] = useState(false)
+  const [editingAccountId, setEditingAccountId] = useState<number | null>(null)
   const [runningAction, setRunningAction] = useState('')
   const [maintenanceConcurrency, setMaintenanceConcurrency] = useState('100')
   const [maintenanceProxyNode, setMaintenanceProxyNode] = useState('')
@@ -1025,6 +1492,13 @@ export default function Accounts() {
           proxyNodes={maintenanceProxyNodes}
         />
       ) : null}
+      {editingAccountId !== null ? (
+        <AccountDetailsDialog
+          accountId={editingAccountId}
+          onClose={() => setEditingAccountId(null)}
+          onUpdated={() => void load()}
+        />
+      ) : null}
       <Card className="border border-[var(--border)] bg-[var(--bg-pane)]/40 p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -1301,6 +1775,15 @@ export default function Accounts() {
                     <td className="px-4 py-3 text-[var(--text-secondary)] text-xs">{formatDate(account.created_at)}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setEditingAccountId(account.id)}
+                          title="查看与编辑账号备注/详情"
+                          className="inline-flex items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg-pane)]/40 px-2 py-1 text-xs text-[var(--text-muted)] hover:border-sky-500/40 hover:text-sky-400 transition-colors"
+                        >
+                          <Edit className="h-3.5 w-3.5" />
+                          编辑
+                        </button>
                         <button
                           type="button"
                           onClick={() => void copyAccount(account)}

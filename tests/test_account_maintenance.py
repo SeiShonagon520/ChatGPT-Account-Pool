@@ -520,6 +520,53 @@ def test_refresh_check_recovers_invalid_access_token_with_protocol_login(monkeyp
     assert credentials["refresh_token"] == "new-refresh"
 
 
+def test_refresh_check_prioritizes_rt_refresh_over_protocol_login_on_401(monkeypatch):
+    from application.tasks import _run_single_refresh_token_check
+    from application.accounts import AccountsService
+
+    account_id = _create_account(
+        email="rt-first@example.com",
+        extra={"access_token": "expired-access", "refresh_token": "valid-rt"},
+    )
+    check_results = iter(
+        [
+            {"state": "invalid", "message": "access token 返回 HTTP 401"},
+            {"state": "valid", "message": "refreshed token works"},
+        ]
+    )
+    monkeypatch.setattr(
+        "platforms.chatgpt.credential_checks.check_chatgpt_access_token",
+        lambda *_args, **_kwargs: next(check_results),
+    )
+    monkeypatch.setattr(
+        "platforms.chatgpt.credential_checks.refresh_chatgpt_tokens",
+        lambda *_args, **_kwargs: {
+            "state": "valid",
+            "message": "RT 有效",
+            "tokens": {"access_token": "rt-new-access", "refresh_token": "rt-new-refresh"},
+        },
+    )
+    # Protocol login must NOT be called because RT refresh succeeds
+    monkeypatch.setattr(
+        "platforms.chatgpt.credential_checks.login_chatgpt_with_protocol",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("protocol login must not be called")),
+    )
+
+    result = _run_single_refresh_token_check(account_id)
+    saved = AccountsService().get_account(account_id)
+
+    assert result["state"] == "valid"
+    assert result["login_required"] is True
+    assert result["login_attempted"] is True
+    assert result["login_succeeded"] is True
+    assert saved is not None
+    assert saved["overview"]["refresh_token_status"] == "valid"
+    assert saved["overview"]["refresh_token_check_method"] == "refresh_token_verified"
+    credentials = {item["key"]: item["value"] for item in saved["credentials"]}
+    assert credentials["access_token"] == "rt-new-access"
+    assert credentials["refresh_token"] == "rt-new-refresh"
+
+
 def test_refresh_check_uses_account_id_for_api_check_and_proxy_for_login(monkeypatch):
     from application.tasks import _run_single_refresh_token_check
 
@@ -1569,3 +1616,71 @@ def test_protocol_login_enforces_total_deadline(monkeypatch):
 
     assert result["state"] == "invalid"
     assert "总时限" in result["message"]
+
+
+def test_protocol_max_attempts_is_three():
+    from platforms.chatgpt.protocol_register import _OAUTH_INIT_MAX_ATTEMPTS
+
+    assert _OAUTH_INIT_MAX_ATTEMPTS == 3
+
+
+def test_refresh_check_falls_back_to_browser_login_after_cloudflare_protocol_failure(monkeypatch):
+    from application.tasks import _run_single_refresh_token_check
+    from application.accounts import AccountsService
+
+    account_id = _create_account(
+        email="cf-fallback@example.com",
+        extra={"access_token": "expired-access"},
+    )
+    check_results = iter(
+        [
+            {"state": "invalid", "message": "access token 返回 HTTP 401"},
+            {"state": "valid", "message": "browser issued new token works"},
+        ]
+    )
+    monkeypatch.setattr(
+        "platforms.chatgpt.credential_checks.check_chatgpt_access_token",
+        lambda *_args, **_kwargs: next(check_results),
+    )
+    # Protocol login returns Cloudflare challenge after 3 retries
+    monkeypatch.setattr(
+        "platforms.chatgpt.credential_checks.login_chatgpt_with_protocol",
+        lambda *_args, **_kwargs: {
+            "state": "invalid",
+            "message": "协议登录失败: Cloudflare challenge at ChatGPT homepage",
+            "tokens": {},
+        },
+    )
+
+    browser_login_called = False
+
+    def fake_browser_login(email, password, totp_secret, **kwargs):
+        nonlocal browser_login_called
+        browser_login_called = True
+        return {
+            "state": "valid",
+            "message": "browser login issued a fresh access token",
+            "tokens": {
+                "access_token": "browser-fresh-access",
+                "refresh_token": "browser-fresh-refresh",
+            },
+        }
+
+    logged_events = []
+    result = _run_single_refresh_token_check(
+        account_id,
+        browser_login=fake_browser_login,
+        event_callback=logged_events.append,
+    )
+    saved = AccountsService().get_account(account_id)
+
+    assert browser_login_called is True
+    assert any("切换 Camoufox" in msg for msg in logged_events)
+    assert result["state"] == "valid"
+    assert result["login_required"] is True
+    assert result["login_attempted"] is True
+    assert result["login_succeeded"] is True
+    credentials = {item["key"]: item["value"] for item in saved["credentials"]}
+    assert credentials["access_token"] == "browser-fresh-access"
+    assert credentials["refresh_token"] == "browser-fresh-refresh"
+

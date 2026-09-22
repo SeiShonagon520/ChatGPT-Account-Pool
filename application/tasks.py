@@ -1894,7 +1894,7 @@ def _run_single_refresh_token_check(
         login_required = True
         if event_callback:
             event_callback(
-                f"{account.email}: {str(result.get('message') or 'AT 已失效')}，开始协议登录获取新 AT"
+                f"{account.email}: {str(result.get('message') or 'AT 已失效')}，开始恢复"
             )
         if is_cancelled():
             return {
@@ -1907,79 +1907,137 @@ def _run_single_refresh_token_check(
                 "login_succeeded": False,
                 "recovery_state": "cancelled",
             }
-        login_timeout = remaining(REFRESH_TOKEN_CHECK_ACCOUNT_TIMEOUT_SECONDS)
-        if login_timeout <= 0:
-            recovery = {
-                "state": "invalid",
-                "message": f"协议登录超过单账号总时限 ({int(timeout_seconds)}s)",
-                "tokens": {},
-            }
-        else:
+
+        # 优先通道：如果账号保存了 Refresh Token，先尝试直接用 RT 刷新换取新 AT（规避网页端人机验证）
+        recovery = None
+        refresh_token = str(
+            extra.get("refresh_token")
+            or extra.get("refreshToken")
+            or ""
+        ).strip()
+        client_id = str(
+            extra.get("client_id")
+            or extra.get("clientId")
+            or ""
+        ).strip()
+
+        if refresh_token:
             login_attempted = True
-            recovery = login_chatgpt_with_protocol(
-                account.email,
-                account.password,
-                provider_accounts=list(extra.get("provider_accounts") or []),
-                totp_secret=str(extra.get("totp_secret") or "").strip(),
+            if event_callback:
+                event_callback(f"{account.email}: 检测到保存的 Refresh Token，优先尝试 RT 刷新换取新 AT...")
+            from platforms.chatgpt.credential_checks import refresh_chatgpt_tokens
+            rt_result = refresh_chatgpt_tokens(
+                refresh_token,
+                client_id=client_id,
                 proxy=login_proxy,
-                timeout_seconds=login_timeout,
-                cancel_check=is_cancelled,
-                log_callback=event_callback,
-                proxy_rotate_callback=login_proxy_rotate_callback,
+                timeout_seconds=min(remaining(30), 20.0),
             )
+            if rt_result.get("state") == "valid" and rt_result.get("tokens", {}).get("access_token"):
+                if event_callback:
+                    event_callback(f"{account.email}: RT 刷新成功，直接换取到新 AT（已规避网页人机挑战）")
+                recovery = rt_result
+                recovery["recovery_method"] = "refresh_token"
+            else:
+                rt_msg = str(rt_result.get("message") or "RT 刷新未通过")
+                if event_callback:
+                    event_callback(f"{account.email}: RT 刷新未通过 ({rt_msg})，回退到密码与 2FA 协议登录")
+
+        if recovery is None:
+            login_timeout = remaining(REFRESH_TOKEN_CHECK_ACCOUNT_TIMEOUT_SECONDS)
+            if login_timeout <= 0:
+                recovery = {
+                    "state": "invalid",
+                    "message": f"协议登录超过单账号总时限 ({int(timeout_seconds)}s)",
+                    "tokens": {},
+                }
+            else:
+                login_attempted = True
+                recovery = login_chatgpt_with_protocol(
+                    account.email,
+                    account.password,
+                    provider_accounts=list(extra.get("provider_accounts") or []),
+                    totp_secret=str(extra.get("totp_secret") or "").strip(),
+                    proxy=login_proxy,
+                    timeout_seconds=login_timeout,
+                    cancel_check=is_cancelled,
+                    log_callback=event_callback,
+                    proxy_rotate_callback=login_proxy_rotate_callback,
+                )
             recovery_message = str(recovery.get("message") or "")
             recovery_lower = recovery_message.lower()
             if (
-                callable(browser_login)
-                and any(
-                    marker in recovery_lower
-                    for marker in (
-                        "cloudflare",
-                        "rate_limit",
-                        "rate limit",
-                        "http 429",
-                        "http 500",
-                    )
-                )
+                recovery.get("state") != "valid"
+                and recovery.get("state") != "banned"
                 and not is_cancelled()
             ):
-                if event_callback:
-                    event_callback("协议登录被上游边缘拦截，切换 Camoufox 执行密码 + 邮箱/TOTP 登录")
-                browser_recovery = browser_login(
-                    account.email,
-                    account.password,
-                    str(extra.get("totp_secret") or "").strip(),
-                    proxy=login_proxy,
-                    log=event_callback,
-                    provider_accounts=list(extra.get("provider_accounts") or []),
-                )
-                browser_message = str(browser_recovery.get("message") or "")
-                browser_lower = browser_message.lower()
-                if any(
-                    marker in browser_lower
-                    for marker in (
-                        "account_deactivated",
-                        "account_suspended",
-                        "account_banned",
-                    )
-                ):
-                    recovery = {
-                        "state": "banned",
-                        "message": browser_message,
-                        "confirmed_ban_code": next(
-                            marker
+                active_browser_login = browser_login
+                standalone_pool = None
+                if not callable(active_browser_login):
+                    try:
+                        from platforms.chatgpt.browser_verify import BrowserFetchPool
+
+                        standalone_pool = BrowserFetchPool(
+                            headless=True,
+                            proxy=login_proxy or None,
+                            concurrency=1,
+                        )
+                        standalone_pool.__enter__()
+                        active_browser_login = getattr(standalone_pool, "browser_login", None)
+                    except Exception as pool_err:
+                        if event_callback:
+                            event_callback(f"无法初始化 Camoufox 降级登录: {pool_err}")
+                if callable(active_browser_login):
+                    if event_callback:
+                        event_callback(
+                            f"{account.email}: 协议登录未成功（{recovery_message}），切换 Camoufox 执行密码 + 邮箱/TOTP 登录"
+                        )
+                    try:
+                        browser_recovery = active_browser_login(
+                            account.email,
+                            account.password,
+                            str(extra.get("totp_secret") or "").strip(),
+                            proxy=login_proxy,
+                            log=event_callback,
+                            provider_accounts=list(extra.get("provider_accounts") or []),
+                        )
+                        browser_message = str(browser_recovery.get("message") or "")
+                        browser_lower = browser_message.lower()
+                        if any(
+                            marker in browser_lower
                             for marker in (
                                 "account_deactivated",
                                 "account_suspended",
                                 "account_banned",
                             )
-                            if marker in browser_lower
-                        ),
-                        "tokens": {},
-                    }
-                elif browser_recovery.get("state") == "valid":
-                    recovery = browser_recovery
-                    recovery["message"] = browser_message or "browser login issued a fresh access token"
+                        ):
+                            recovery = {
+                                "state": "banned",
+                                "message": browser_message,
+                                "confirmed_ban_code": next(
+                                    marker
+                                    for marker in (
+                                        "account_deactivated",
+                                        "account_suspended",
+                                        "account_banned",
+                                    )
+                                    if marker in browser_lower
+                                ),
+                                "tokens": {},
+                            }
+                        elif browser_recovery.get("state") == "valid":
+                            recovery = browser_recovery
+                            recovery["message"] = (
+                                browser_message
+                                or "browser login issued a fresh access token"
+                            )
+                        else:
+                            recovery = browser_recovery
+                    finally:
+                        if standalone_pool is not None:
+                            try:
+                                standalone_pool.__exit__(None, None, None)
+                            except Exception:
+                                pass
         recovery.setdefault("message", "401 recovery login did not issue fresh credentials")
         recovery_state = str(recovery.get("state") or "unknown")
         if recovery.get("state") == "valid":
@@ -2022,11 +2080,16 @@ def _run_single_refresh_token_check(
         if recovery.get("state") == "valid":
             result = recovery
             state = "valid"
-            check_method = "protocol_login_verified"
+            check_method = (
+                "refresh_token_verified"
+                if recovery.get("recovery_method") == "refresh_token"
+                else "protocol_login_verified"
+            )
             relogin_status = "recovered"
             login_succeeded = True
             if event_callback:
-                event_callback(f"{account.email}: 协议登录成功，已获取并保存新 AT")
+                method_name = "RT 刷新" if recovery.get("recovery_method") == "refresh_token" else "协议登录"
+                event_callback(f"{account.email}: {method_name}成功，已获取并保存新 AT")
         elif recovery.get("state") == "cancelled" or is_cancelled():
             return {
                 "account_id": account_id,
@@ -2401,8 +2464,7 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
             )
         except Exception as exc:
             logger.log(
-                f"401 恢复登录无法创建独立 Mihomo slot，使用当前代理组：{exc}",
-                level="warning",
+                f"401 恢复登录使用本地代理：{login_proxy}",
                 event_type="progress",
             )
     logger.log(

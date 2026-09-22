@@ -1,12 +1,13 @@
 services:
   app:
+    container_name: chatgpt-account-pool-app
     build: .
     init: true
     # Firefox 多 Context 会大量使用 /dev/shm；Docker 默认 64 MiB 容易在高并发下
     # 触发页面崩溃。该空间按需使用，不会预占 2 GiB 物理内存。
     shm_size: "2gb"
-    depends_on:
-      - mihomo
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"   # FastAPI / Web UI
       - "127.0.0.1:6080:6080"   # noVNC (SSH tunnel only)
@@ -35,7 +36,7 @@ services:
       - CHATGPT_BROWSER_BLOCK_IMAGES=${CHATGPT_BROWSER_BLOCK_IMAGES:-1}
       - CHATGPT_BROWSER_DIAGNOSTICS_DIR=/app/data/browser-diagnostics
       - MIHOMO_CONTROLLER_URL=http://mihomo:9090
-      - MIHOMO_CONFIG_FILE=/app/data/mihomo-config.yaml
+      - MIHOMO_CONFIG_FILE=/app/deploy/mihomo/config.yaml
       - MIHOMO_CONFIG_RELOAD_PATH=/root/.config/mihomo/config.yaml
       - MIHOMO_PROXY_URL=http://mihomo:7890
       - MIHOMO_PROXY_GROUP=REGISTER-ALL
@@ -68,7 +69,14 @@ services:
     volumes:
       - ./data:/app/data   # 持久化 SQLite 数据库
       - ./static:/app/static:ro   # 实时挂载前端静态资源
-      - ${MIHOMO_CONFIG_PATH:-./deploy/mihomo/config.yaml}:/app/data/mihomo-config.yaml
+      - ./deploy/mihomo/config.yaml:/app/deploy/mihomo/config.yaml
+      - ./api:/app/api
+      - ./application:/app/application
+      - ./core:/app/core
+      - ./infrastructure:/app/infrastructure
+      - ./platforms:/app/platforms
+      - ./services:/app/services
+      - ./main.py:/app/main.py
     networks:
       - default
       - inbucket
@@ -80,19 +88,17 @@ services:
         max-file: "3"
 
   mihomo:
+    container_name: chatgpt-account-pool-mihomo
     image: metacubex/mihomo:latest
     expose:
       - "7890"
       - "9090"
     volumes:
-      - ${MIHOMO_CONFIG_PATH:-./deploy/mihomo/config.yaml}:/root/.config/mihomo/config.yaml
+      - ./deploy/mihomo/config.yaml:/root/.config/mihomo/config.yaml
       - mihomo-provider-data:/root/.config/mihomo/providers
+    networks:
+      - default
     restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "3"
 
 volumes:
   mihomo-provider-data:
@@ -101,3 +107,4 @@ networks:
   inbucket:
     external: true
     name: inbucket_default
+

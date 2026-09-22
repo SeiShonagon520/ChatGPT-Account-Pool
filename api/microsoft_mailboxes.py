@@ -285,3 +285,28 @@ def delete_mailbox(email: str):
     if not ok:
         raise HTTPException(404, "邮箱不存在或删除失败")
     return {"ok": True, "email": decoded}
+
+
+class UpdateMailboxStatusRequest(BaseModel):
+    status: str
+
+
+@router.patch("/{email:path}/status")
+async def update_mailbox_status(email: str, body: UpdateMailboxStatusRequest):
+    import urllib.parse
+
+    decoded = urllib.parse.unquote(email).strip().lower()
+    target_status = body.status.strip().lower()
+    if target_status not in {"available", "disabled"}:
+        raise HTTPException(400, "状态只能为 'available' 或 'disabled'")
+    ok = await run_in_threadpool(repository.set_status, decoded, target_status)
+    if not ok:
+        raise HTTPException(404, "邮箱不存在或更新失败")
+    record = await run_in_threadpool(repository.get_by_parent_email, decoded)
+    return {
+        "ok": True,
+        "email": decoded,
+        "status": record.status if record else target_status,
+        "stats": repository.stats(),
+    }
+
