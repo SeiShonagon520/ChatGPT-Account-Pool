@@ -95,6 +95,12 @@ _CLOUDFLARE_MARKERS = (
     "enable javascript and cookies to continue",
     "performing security verification",
     "cloudflare ray id",
+    "请确认您是真人",
+    "确认您是真人",
+    "验证您是真人",
+    "人机身份验证",
+    "进行人工验证",
+    "human verification",
 )
 
 
@@ -131,16 +137,34 @@ async def _hard_proxy_block_reason(page) -> str:
 
 
 async def _is_cloudflare_challenge(page) -> bool:
-    """检测页面是否是 Cloudflare 挑战页（"Just a moment..." 等）。"""
+    """检测页面是否是 Cloudflare 挑战页（"Just a moment..." 等，支持 iframe 与 DOM 控件）。"""
     try:
         url = str(page.url or "").lower()
         if "__cf_chl" in url or "challenge-platform" in url:
             return True
         snapshot = await _page_snapshot(page)
         combined = f"{snapshot['title']} {snapshot['body']}".lower()
-        return any(marker in combined for marker in _CLOUDFLARE_MARKERS)
+        if any(marker in combined for marker in _CLOUDFLARE_MARKERS):
+            return True
+
+        # 检测跨域 iframe (challenges.cloudflare.com)
+        for frame in page.frames:
+            furl = str(frame.url or "").lower()
+            if "challenges.cloudflare.com" in furl or "challenge-platform" in furl:
+                return True
+
+        # 检测 DOM 级 Turnstile 控件与容器
+        has_cf_element = await page.evaluate('''() => {
+            if (document.querySelector('input[name="cf-turnstile-response"]')) return true;
+            if (document.querySelector('iframe[src*="challenges.cloudflare.com"]')) return true;
+            if (document.querySelector('#challenge-stage, #challenge-running, #challenge-form, .cf-turnstile')) return true;
+            return false;
+        }''')
+        if has_cf_element:
+            return True
     except Exception:
-        return False
+        pass
+    return False
 
 
 def _safe_log(log_fn, message: str, **kwargs: Any) -> None:
@@ -159,8 +183,9 @@ def _safe_log(log_fn, message: str, **kwargs: Any) -> None:
 
 async def _perform_turnstile_click(page, box: dict[str, float], log) -> bool:
     try:
-        # Checkbox 位于 Turnstile 小组件左侧约 35-45px 处
-        cx = box["x"] + min(45.0, max(20.0, box["width"] / 4.0))
+        # Checkbox 位于 Turnstile 小组件左侧约 30-36px 处 (正中心约 33px)
+        offset_x = min(35.0, max(15.0, box["width"] / 9.0)) if box.get("width", 0) > 80 else (box["width"] / 2.0)
+        cx = box["x"] + offset_x
         cy = box["y"] + (box["height"] / 2.0)
 
         # 模拟人类轨迹：先从页面随机位置移动，再平滑靠近
@@ -195,7 +220,75 @@ async def _perform_turnstile_click(page, box: dict[str, float], log) -> bool:
 async def _try_click_turnstile_checkbox(page, log) -> bool:
     """尝试定位 Cloudflare Turnstile 并模拟人类鼠标点击复选框（支持内联 DOM 及 iframe 两种渲染模式）。"""
     try:
-        # 1. 优先检测 Cloudflare 顶层内嵌 Managed Challenge (如 auth.openai.com)
+        # 1. 优先在 page.frames 中直接定位 iframe 内部 checkbox 并触发直接点击
+        for frame in page.frames:
+            furl = str(frame.url or "").lower()
+            if "challenges.cloudflare.com" in furl or "turnstile" in furl:
+                for sel in (
+                    'input[type="checkbox"]',
+                    '.cb-lb input[type="checkbox"]',
+                    'label input[type="checkbox"]',
+                    'span.mark',
+                    '#challenge-stage',
+                    'label',
+                ):
+                    try:
+                        loc = frame.locator(sel).first
+                        if await loc.is_visible(timeout=500):
+                            await loc.click(timeout=1500)
+                            _safe_log(log, f"✅ 成功直接点击 Turnstile 内核复选框: {sel}")
+                            return True
+                    except Exception:
+                        pass
+                try:
+                    iframe_el = await frame.frame_element()
+                    if iframe_el:
+                        b = await iframe_el.bounding_box()
+                        if b and b["width"] > 10 and b["height"] > 10 and b["y"] >= 0:
+                            return await _perform_turnstile_click(page, b, log)
+                except Exception:
+                    pass
+
+        # 2. 尝试从 DOM selector 寻找 iframe 并获取 content_frame 点击
+        locators = [
+            page.locator('iframe[src*="challenges.cloudflare.com"]'),
+            page.locator('iframe[title*="Cloudflare security challenge"]'),
+            page.locator('iframe[title*="Turnstile"]'),
+            page.locator('iframe[title*="security challenge"]'),
+            page.locator('iframe[title*="widget"]'),
+        ]
+        for loc in locators:
+            try:
+                count = await loc.count()
+                for idx in range(count):
+                    el = loc.nth(idx)
+                    if await el.is_visible():
+                        try:
+                            cf = await el.content_frame()
+                            if cf:
+                                for sel in ('input[type="checkbox"]', '.cb-lb input[type="checkbox"]', 'label input[type="checkbox"]', 'span.mark'):
+                                    try:
+                                        cb = cf.locator(sel).first
+                                        await cb.click(timeout=1500)
+                                        _safe_log(log, f"✅ 成功通过 content_frame 点击 Turnstile 复选框: {sel}")
+                                        return True
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                        try:
+                            await el.click(timeout=1000)
+                            _safe_log(log, "✅ 成功直接点击 Turnstile iframe 元素")
+                            return True
+                        except Exception:
+                            pass
+                        b = await el.bounding_box()
+                        if b and b["width"] > 10 and b["height"] > 10 and b["y"] >= 0:
+                            return await _perform_turnstile_click(page, b, log)
+            except Exception:
+                pass
+
+        # 3. 顶层内嵌 Managed Challenge (如 auth.openai.com)
         box = await page.evaluate('''() => {
             const inp = document.querySelector('input[name="cf-turnstile-response"]');
             if (inp) {
@@ -219,37 +312,6 @@ async def _try_click_turnstile_checkbox(page, log) -> bool:
         }''')
         if isinstance(box, dict) and box.get("width", 0) > 20 and box.get("height", 0) > 20:
             return await _perform_turnstile_click(page, box, log)
-
-        # 2. 尝试从 page.frames 寻找 iframe 挑战
-        for frame in page.frames:
-            if "challenges.cloudflare.com" in str(frame.url or "").lower():
-                try:
-                    iframe_el = await frame.frame_element()
-                    if iframe_el:
-                        b = await iframe_el.bounding_box()
-                        if b and b["width"] > 10 and b["height"] > 10 and b["y"] >= 0:
-                            return await _perform_turnstile_click(page, b, log)
-                except Exception:
-                    pass
-
-        # 3. 尝试从 DOM selector 寻找 iframe
-        locators = [
-            page.locator('iframe[src*="challenges.cloudflare.com"]'),
-            page.locator('iframe[title*="Cloudflare security challenge"]'),
-            page.locator('iframe[title*="Turnstile"]'),
-            page.locator('iframe[title*="security challenge"]'),
-        ]
-        for loc in locators:
-            try:
-                count = await loc.count()
-                for idx in range(count):
-                    el = loc.nth(idx)
-                    if await el.is_visible():
-                        b = await el.bounding_box()
-                        if b and b["width"] > 10 and b["height"] > 10 and b["y"] >= 0:
-                            return await _perform_turnstile_click(page, b, log)
-            except Exception:
-                pass
     except Exception as exc:
         _safe_log(log, f"Turnstile 识别异常: {exc}", level="debug")
     return False
@@ -272,7 +334,7 @@ async def _wait_cloudflare_pass(page, log, timeout: int = 45) -> bool:
             _safe_log(log, "Cloudflare 挑战已通过")
             return True
         now = time.time()
-        if now - last_click_at >= 4.0:
+        if now - last_click_at >= 8.0:
             last_click_at = now
             await _try_click_turnstile_checkbox(page, log)
     _safe_log(log, "Cloudflare 挑战超时未通过", level="warning")
@@ -750,7 +812,217 @@ async def _fetch_session_via_page(page, log) -> dict:
     raise RuntimeError("提取 ChatGPT session 失败：/api/auth/session 未返回 accessToken")
 
 
-async def _build_session_result(page, session_data: dict, log) -> dict:
+async def _mint_codex_tokens_via_browser(
+    page,
+    log,
+    *,
+    email: str = "",
+    proxy: str | None = None,
+    cookies: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Execute Codex PKCE flow in the authenticated browser context to mint genuine Codex access & refresh tokens."""
+    import json
+    from urllib.parse import parse_qs, urlparse
+    from .constants import CODEX_CLIENT_ID, CODEX_REDIRECT_URI, CODEX_SCOPE, OAUTH_TOKEN_URL
+    from .oauth import generate_oauth_url, submit_callback_url
+
+    clean_email = str(email or "").strip().lower()
+    captured_callback: list[str] = []
+
+    def on_request(req):
+        req_url = req.url
+        if "localhost:1455" in req_url or "code=" in req_url:
+            captured_callback.append(req_url)
+
+    def on_response(resp):
+        loc = resp.headers.get("location") or ""
+        if "localhost:1455" in loc or "code=" in loc:
+            captured_callback.append(loc)
+
+    def on_nav(frame):
+        furl = frame.url
+        if "localhost:1455" in furl or "code=" in furl:
+            captured_callback.append(furl)
+
+    page.on("request", on_request)
+    page.on("response", on_response)
+    page.on("framenavigated", on_nav)
+
+    active_oauth_starts: dict[str, Any] = {}
+
+    try:
+        # 依次尝试两种模式：
+        # 1. prompt="none": OIDC 静默授权模式。若会话有效，OpenAI 立即 302 重定向到 localhost:1455
+        # 2. prompt="": 若静默模式提示需用户交互，进入常规授权模式点击对应账号
+        for prompt_mode in ("none", ""):
+            if any("code=" in c for c in captured_callback):
+                break
+
+            oauth_start = generate_oauth_url(
+                redirect_uri=CODEX_REDIRECT_URI,
+                scope=CODEX_SCOPE,
+                client_id=CODEX_CLIENT_ID,
+                prompt=prompt_mode,
+            )
+            active_oauth_starts[oauth_start.state] = oauth_start
+            _safe_log(log, f"正在浏览器内换取 Codex OAuth 授权 (prompt={prompt_mode or 'default'})...")
+
+            try:
+                await page.goto(oauth_start.auth_url, wait_until="domcontentloaded", timeout=20000)
+            except Exception as p_exc:
+                exc_str = str(p_exc)
+                _safe_log(log, f"浏览器 OAuth 跳转状态: {exc_str[:120]}", level="info")
+                if "localhost:1455" in exc_str and "code=" in exc_str:
+                    for part in exc_str.split():
+                        part_clean = part.strip('"\'(),')
+                        if "localhost:1455" in part_clean and "code=" in part_clean:
+                            captured_callback.append(part_clean)
+                            break
+
+            for _ in range(16):
+                # 检查是否截获到带 code 的回调
+                code_cands = [c for c in captured_callback if "code=" in c]
+                if code_cands:
+                    _safe_log(log, "✅ 浏览器内已截获有效 Codex OAuth 授权回调")
+                    break
+
+                # 检查静默授权是否要求交互
+                if prompt_mode == "none":
+                    err_cands = [c for c in captured_callback if "error=login_required" in c or "error=interaction_required" in c]
+                    if err_cands:
+                        _safe_log(log, "静默授权提示需要用户交互，切换至常规授权模式...", level="info")
+                        captured_callback.clear()
+                        break
+
+                cur_url = str(page.url or "")
+                # 处理账号选择页 (/choose-an-account)
+                if "choose-an-account" in cur_url or "unified_sessions" in cur_url:
+                    clicked_account = False
+                    if clean_email:
+                        for sel in (
+                            f'button:has-text("{clean_email}")',
+                            f'[role="button"]:has-text("{clean_email}")',
+                            f'div:has-text("{clean_email}")',
+                        ):
+                            try:
+                                loc = page.locator(sel).first
+                                if await loc.is_visible(timeout=300):
+                                    await loc.click(timeout=1000)
+                                    clicked_account = True
+                                    _safe_log(log, f"账号选择页已点击匹配账号: {clean_email}")
+                                    break
+                            except Exception:
+                                pass
+
+                    if not clicked_account:
+                        for sel in (
+                            'button[data-testid="account-item"]',
+                            'button[data-testid*="account"]',
+                            '[data-testid="account-item"]',
+                            '[role="button"]',
+                        ):
+                            try:
+                                loc = page.locator(sel).first
+                                if await loc.is_visible(timeout=300):
+                                    await loc.click(timeout=1000)
+                                    _safe_log(log, f"账号选择页已点击首选账号: {sel}")
+                                    break
+                            except Exception:
+                                pass
+
+                # 处理授权确认按钮 (Continue / Authorize / Sign in / Allow)
+                btn = page.locator(
+                    'button[type="submit"], button:has-text("Continue"), button:has-text("Authorize"), button:has-text("Sign in"), button:has-text("Allow")'
+                ).first
+                try:
+                    if await btn.is_visible(timeout=400):
+                        btn_txt = str(await btn.inner_text(timeout=500) or "").strip()
+                        await btn.click(timeout=1000)
+                        _safe_log(log, f"授权页已点击提交: {btn_txt}")
+                except Exception:
+                    pass
+
+                await asyncio.sleep(0.5)
+
+    except Exception as exc:
+        _safe_log(log, f"浏览器换取 Codex OAuth 回调异常: {exc}", level="warning")
+    finally:
+        try:
+            page.remove_listener("request", on_request)
+            page.remove_listener("response", on_response)
+            page.remove_listener("framenavigated", on_nav)
+        except Exception:
+            pass
+
+    # 提取回调中的 code
+    from .oauth import _parse_callback_url
+    for cb in reversed(captured_callback):
+        if "code=" not in cb:
+            continue
+        parsed_cb = _parse_callback_url(cb)
+        cb_code = parsed_cb.get("code")
+        cb_state = parsed_cb.get("state")
+        start_info = active_oauth_starts.get(cb_state)
+        if cb_code and start_info:
+            try:
+                res_json_str = await asyncio.to_thread(
+                    submit_callback_url,
+                    callback_url=cb,
+                    expected_state=start_info.state,
+                    code_verifier=start_info.code_verifier,
+                    redirect_uri=CODEX_REDIRECT_URI,
+                    client_id=CODEX_CLIENT_ID,
+                    token_url=OAUTH_TOKEN_URL,
+                    proxy_url=proxy,
+                )
+                res_data = json.loads(res_json_str)
+                a_token = str(res_data.get("access_token") or "").strip()
+                r_token = str(res_data.get("refresh_token") or "").strip()
+                id_token = str(res_data.get("id_token") or "").strip()
+                if a_token and r_token:
+                    _safe_log(log, "🎉 浏览器上下文已成功换取真实 Codex OAuth 凭证 (含 Refresh Token 与 Client ID)")
+                    return {
+                        "access_token": a_token,
+                        "refresh_token": r_token,
+                        "id_token": id_token,
+                        "client_id": CODEX_CLIENT_ID,
+                    }
+            except Exception as exc:
+                _safe_log(log, f"Codex OAuth code 换取 token 失败: {exc}", level="warning")
+
+    # 双重保障兜底：若浏览器内未捕获有效回调，使用会话 Cookie 走底层 HTTP 协议换取 RT
+    if cookies:
+        try:
+            _safe_log(log, "浏览器未捕获回调，启用底层会话 Cookie 协议换取 RT...", level="info")
+            from .credential_checks import mint_chatgpt_refresh_token_from_session
+            recovered = await asyncio.to_thread(
+                mint_chatgpt_refresh_token_from_session,
+                cookies,
+                proxy=proxy,
+                email=clean_email,
+            )
+            if recovered.get("state") == "valid":
+                toks = dict(recovered.get("tokens") or {})
+                if toks.get("refresh_token"):
+                    _safe_log(log, "🎉 会话 Cookie 协议已成功换取真实 Codex Refresh Token！")
+                    return toks
+            else:
+                _safe_log(log, f"会话 Cookie 协议换取未成功: {recovered.get('message')}", level="info")
+        except Exception as fb_exc:
+            _safe_log(log, f"会话 Cookie 协议换取异常: {fb_exc}", level="warning")
+
+    _safe_log(log, "浏览器内未截获 Codex OAuth 回调重定向，保持基础网页会话凭证", level="warning")
+    return {}
+
+
+async def _build_session_result(
+    page,
+    session_data: dict,
+    log,
+    *,
+    email: str = "",
+    proxy: str | None = None,
+) -> dict:
     cookies = await _get_cookies(page)
     access_token = str(session_data.get("accessToken") or session_data.get("access_token") or "").strip()
     session_token = str(cookies.get(_SESSION_COOKIE_NAME) or "").strip()
@@ -760,6 +1032,7 @@ async def _build_session_result(page, session_data: dict, log) -> dict:
         user = {}
     account_id = _extract_account_id(access_token) or str(user.get("id") or "")
     cookies_header = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
+    resolved_email = email or str(user.get("email") or "").strip()
 
     result: dict[str, Any] = {
         "account_id": account_id,
@@ -769,7 +1042,7 @@ async def _build_session_result(page, session_data: dict, log) -> dict:
         "session_token": session_token,
         "cookies": cookies_header,
         "profile": {
-            "email": str(user.get("email") or ""),
+            "email": resolved_email,
             "name": str(user.get("name") or ""),
         },
     }
@@ -777,9 +1050,30 @@ async def _build_session_result(page, session_data: dict, log) -> dict:
         if "refresh" in key.lower() and value:
             result["refresh_token"] = value
             break
+
+    # 优先在浏览器已认证上下文内换取真正的 Codex OAuth 凭证（供 Cockpit 直连及免翻墙反代）
+    try:
+        codex_tokens = await _mint_codex_tokens_via_browser(
+            page,
+            log,
+            email=resolved_email,
+            proxy=proxy,
+            cookies=cookies,
+        )
+        if codex_tokens.get("access_token") and codex_tokens.get("refresh_token"):
+            result["access_token"] = codex_tokens["access_token"]
+            result["refresh_token"] = codex_tokens["refresh_token"]
+            result["client_id"] = codex_tokens["client_id"]
+            if codex_tokens.get("id_token"):
+                result["id_token"] = codex_tokens["id_token"]
+    except Exception as exc:
+        _safe_log(log, f"尝试静默获取 Codex 凭证异常: {exc}", level="warning")
+
     log(
         f"会话提取: account_id={'yes' if account_id else 'no'} "
-        f"access_token={'yes' if access_token else 'no'} "
+        f"access_token={'yes' if result.get('access_token') else 'no'} "
+        f"refresh_token={'yes' if result.get('refresh_token') else 'no'} "
+        f"client_id={result.get('client_id') or 'web'} "
         f"session_token={'yes' if session_token else 'no'}"
     )
     return result
@@ -794,6 +1088,7 @@ async def _browser_registration_flow(
     startup_gate: asyncio.Semaphore | None = None,
     bind_totp_2fa: bool = False,
     is_login: bool = False,
+    proxy: str | None = None,
 ) -> dict:
     action_desc = "登录" if is_login else "注册"
     log(f"开始 ChatGPT 浏览器{action_desc}: {email}")
@@ -923,6 +1218,8 @@ async def _browser_registration_flow(
                 page,
                 await _fetch_session_via_page(page, log),
                 log,
+                email=email,
+                proxy=proxy,
             )
             result["password_registered"] = True
             if bind_totp_2fa:
@@ -1223,6 +1520,7 @@ async def register_in_context(browser, *, email: str, password: str, proxy: str 
                 startup_gate=startup_gate,
                 bind_totp_2fa=bind_totp_2fa,
                 is_login=is_login,
+                proxy=proxy,
             )
             result = dict(final)
             result.update({

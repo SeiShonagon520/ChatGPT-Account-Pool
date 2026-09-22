@@ -9,6 +9,7 @@ import {
 import { useEffect, useState } from "react";
 import { getAuthToken, setAuthToken, API, cn } from "@/lib/utils";
 import { I18nProvider, useI18n } from "@/lib/i18n-context";
+import { PrivacyProvider, usePrivacy } from "@/lib/privacy-context";
 import type { TranslationKey } from "@/lib/i18n";
 import Accounts from "@/pages/Accounts";
 import Tasks from "@/pages/Tasks";
@@ -26,6 +27,8 @@ import {
   PanelLeftClose,
   PanelLeft,
   Inbox,
+  Shield,
+  ShieldAlert,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -66,6 +69,7 @@ function Sidebar({
   setCollapsed: (v: boolean) => void;
 }) {
   const { t, toggleLanguage } = useI18n();
+  const { privacyMode, togglePrivacyMode } = usePrivacy();
   const location = useLocation();
   const isSettings = location.pathname === "/settings";
   const currentTab = new URLSearchParams(location.search).get("tab") || "general";
@@ -209,6 +213,18 @@ function Sidebar({
           <Languages className="h-4 w-4" />
         </button>
         <button
+          onClick={togglePrivacyMode}
+          className={cn(
+            "flex items-center justify-center rounded-md p-2 transition-colors cursor-pointer",
+            privacyMode
+              ? "text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20"
+              : "text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]"
+          )}
+          title={privacyMode ? "隐私防窥模式：已开启（敏感信息已脱敏）" : "隐私防窥模式：已关闭（敏感信息公开）"}
+        >
+          {privacyMode ? <Shield className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
+        </button>
+        <button
           onClick={() => setCollapsed(!collapsed)}
           className="flex items-center justify-center rounded-md p-2 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]"
           title={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
@@ -237,6 +253,7 @@ function Shell({
   setTheme: (t: string) => void;
   toggleTheme: () => void;
 }) {
+  const { privacyMode, togglePrivacyMode } = usePrivacy();
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("sidebar-collapsed") === "true",
   );
@@ -267,7 +284,29 @@ function Shell({
       />
       <main className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-6xl px-6 py-6 lg:px-8">
-          <UpdateBanner />
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <UpdateBanner />
+            </div>
+            <button
+              type="button"
+              onClick={togglePrivacyMode}
+              className={cn(
+                "shrink-0 inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all cursor-pointer shadow-sm",
+                privacyMode
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                  : "border-[var(--border)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-zinc-500"
+              )}
+              title={privacyMode ? "点击关闭防窥模式（显示所有明文）" : "点击开启防窥模式（敏感信息自动打码）"}
+            >
+              {privacyMode ? (
+                <Shield className="h-3.5 w-3.5 text-emerald-400" />
+              ) : (
+                <ShieldAlert className="h-3.5 w-3.5 text-zinc-400" />
+              )}
+              <span>{privacyMode ? "防窥保护：已开启" : "防窥保护：已关闭"}</span>
+            </button>
+          </div>
           <Routes>
             <Route path="/" element={<Navigate to="/accounts/chatgpt" replace />} />
             <Route path="/accounts/chatgpt" element={<Accounts />} />
@@ -424,7 +463,9 @@ function AppContent() {
 export default function App() {
   return (
     <I18nProvider>
-      <AppContent />
+      <PrivacyProvider>
+        <AppContent />
+      </PrivacyProvider>
     </I18nProvider>
   );
 }

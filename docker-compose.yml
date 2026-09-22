@@ -8,6 +8,9 @@ services:
     shm_size: "2gb"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      mihomo:
+        condition: service_started
     ports:
       - "8000:8000"   # FastAPI / Web UI
       - "127.0.0.1:6080:6080"   # noVNC (SSH tunnel only)
@@ -68,11 +71,14 @@ services:
       # - VNC_PASSWORD=changeme
     volumes:
       - ./data:/app/data   # 持久化 SQLite 数据库
+      # 持久化 Camoufox 浏览器内核；否则重建容器后只剩 Python 包，浏览器文件会丢失
+      - ./data/camoufox-cache:/root/.cache/camoufox
       - ./static:/app/static:ro   # 实时挂载前端静态资源
       - ./deploy/mihomo/config.yaml:/app/deploy/mihomo/config.yaml
       - ./api:/app/api
       - ./application:/app/application
       - ./core:/app/core
+      - ./domain:/app/domain
       - ./infrastructure:/app/infrastructure
       - ./platforms:/app/platforms
       - ./services:/app/services
@@ -80,7 +86,7 @@ services:
     networks:
       - default
       - inbucket
-    restart: unless-stopped
+    restart: always
     logging:
       driver: json-file
       options:
@@ -98,13 +104,16 @@ services:
       - mihomo-provider-data:/root/.config/mihomo/providers
     networks:
       - default
-    restart: unless-stopped
+    restart: always
 
 volumes:
   mihomo-provider-data:
 
 networks:
+  default:
+    name: chatgpt_pool_default
   inbucket:
-    external: true
     name: inbucket_default
+    external: true
+
 

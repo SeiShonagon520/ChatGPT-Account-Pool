@@ -3,6 +3,7 @@ import { Check, CircleAlert, LoaderCircle, Pencil, Plus, Power, RefreshCw, Trash
 
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/utils'
+import { MaskedField } from '@/lib/privacy-context'
 
 type ProxySource = {
   name: string
@@ -195,7 +196,9 @@ export default function ProxyPoolSettings() {
               <tbody className="divide-y divide-[var(--border)]">
                 {sources.map(source => <tr key={source.name} className="hover:bg-[var(--bg-hover)]/50">
                   <td className="px-4 py-3 font-medium text-[var(--text-primary)]">{source.name}</td>
-                  <td className="max-w-[380px] break-all px-4 py-3 font-mono text-xs text-[var(--text-secondary)]">{source.url || '-'}</td>
+                  <td className="max-w-[420px] break-all px-4 py-3 font-mono text-xs text-[var(--text-secondary)]">
+                    <MaskedField value={source.url} type="url" canCopy copyLabel="复制完整订阅 URL" />
+                  </td>
                   <td className="px-4 py-3 text-[var(--text-secondary)]">{source.interval}s</td>
                   <td className="px-4 py-3 text-[var(--text-secondary)]">{source.node_count}</td>
                   <td className="px-4 py-3">{source.runtime_available ? <span className="text-emerald-400">已加载</span> : <span className="text-[var(--text-muted)]">待加载</span>}</td>

@@ -70,3 +70,5 @@ class AccountExportSelection:
     select_all: bool = False
     status_filter: str = ""
     search_filter: str = ""
+    codex_only: bool = False
+    force: bool = False

@@ -185,19 +185,43 @@ def _has_explicit_ban_marker(response: Any, payload: dict[str, Any] | None = Non
 
 def _is_invalid_refresh_response(status_code: int, payload: dict[str, Any], text: str) -> bool:
     """Return true when the saved refresh credential must be renewed."""
-    # For account maintenance, OpenAI HTTP 403 is a stale-credential signal:
-    # retry the account through the protocol login flow to mint a fresh AT.
-    if status_code == 403:
+    # For account maintenance, OpenAI HTTP 401/403 are stale-credential signals:
+    # 401 is unauthorized (session ended / revoked token), 403 is forbidden.
+    if status_code in {401, 403}:
         return True
     if status_code != 400:
         return False
-    error = str(payload.get("error") or "").strip().lower()
+    raw_error = payload.get("error")
+    error = (
+        raw_error
+        if isinstance(raw_error, str)
+        else str((raw_error or {}).get("code") or "")
+    ).strip().lower()
+    error_msg = str((raw_error or {}).get("message") or "") if isinstance(raw_error, dict) else ""
     description = str(
-        payload.get("error_description") or payload.get("message") or text or ""
+        payload.get("error_description")
+        or error_msg
+        or payload.get("message")
+        or text
+        or ""
     ).lower()
-    return error in {"invalid_grant", "invalid_token"} or (
-        "refresh" in description
-        and any(marker in description for marker in ("invalid", "expired", "revoked"))
+    return (
+        error in {"invalid_grant", "invalid_token", "refresh_token_invalidated", "unauthorized"}
+        or any(
+            marker in description
+            for marker in (
+                "session has ended",
+                "session_ended",
+                "refresh_token_invalidated",
+                "invalid_grant",
+                "invalid_token",
+                "token has been revoked",
+            )
+        )
+        or (
+            "refresh" in description
+            and any(marker in description for marker in ("invalid", "expired", "revoked"))
+        )
     )
 
 
@@ -946,7 +970,10 @@ def refresh_chatgpt_tokens(
                 "refresh_token": token,
                 "client_id": str(client_id or CODEX_CLIENT_ID).strip() or CODEX_CLIENT_ID,
             },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
             proxies=proxies,
             timeout=max(float(timeout_seconds or 30), 1.0),
             impersonate=PROTOCOL_CHROME_IMPERSONATE,
@@ -1230,6 +1257,7 @@ def check_chatgpt_access_token(
     account_id: str = "",
     timeout_seconds: float = 30,
     browser_fetch: Callable[..., dict[str, Any]] | None = None,
+    verify_codex: bool = False,
 ) -> dict[str, str]:
     """Validate an AT via OpenAI API, then optionally inspect workspace state.
 
@@ -1248,8 +1276,20 @@ def check_chatgpt_access_token(
     if not token:
         return {"state": "missing", "message": "账号未保存可校验的 access token"}
 
+    token_payload = _decode_access_token_payload(token)
+    client_id = str(token_payload.get("client_id") or "")
+
     if _access_token_expired_locally(token):
-        return {"state": "invalid", "message": "access token JWT exp 已过期"}
+        res = {"state": "invalid", "message": "access token JWT exp 已过期"}
+        if verify_codex:
+            res.update({
+                "web_valid": False,
+                "codex_valid": False,
+                "web_status": "invalid",
+                "codex_status": "invalid",
+                "client_id": client_id,
+            })
+        return res
 
     resolved_account_id = (
         str(account_id or "").strip()
@@ -1273,6 +1313,13 @@ def check_chatgpt_access_token(
             return {
                 "state": "valid",
                 "message": f"HTTP {status_code}（{endpoint_name}）",
+                "transient": False,
+                "http_status": status_code,
+            }
+        if endpoint_name.endswith("/codex/responses") and status_code == 400:
+            return {
+                "state": "valid",
+                "message": f"HTTP 200/400（{endpoint_name}，鉴权通过）",
                 "transient": False,
                 "http_status": status_code,
             }
@@ -1334,6 +1381,9 @@ def check_chatgpt_access_token(
         *,
         proxies: dict[str, str] | None,
         max_retries: int,
+        method: str = "GET",
+        body: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         last_result: dict[str, Any] = {
             "state": "unknown",
@@ -1341,6 +1391,9 @@ def check_chatgpt_access_token(
             "transient": True,
             "http_status": 0,
         }
+        headers = dict(request_headers)
+        if extra_headers:
+            headers.update(extra_headers)
         for attempt in range(max_retries + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1348,12 +1401,13 @@ def check_chatgpt_access_token(
             try:
                 if browser_fetch is not None:
                     # Real browser context (camoufox page) — Cloudflare sees a
-                    # genuine browser fingerprint, no spurious 403 challenge.
+                    # genuine browser fingerprint instead of a protocol client, avoiding the
+                    # spurious HTTP 403 challenge that curl_cffi hits on api.openai.com.
                     result = browser_fetch(
                         endpoint_url,
-                        method="GET",
-                        headers=request_headers,
-                        body=None,
+                        method=method,
+                        headers=headers,
+                        body=body,
                     )
                     status = int(result.get("status") or 0)
                     text = str(result.get("text") or "")
@@ -1380,13 +1434,23 @@ def check_chatgpt_access_token(
 
                     response = _BrowserResponse()
                 else:
-                    response = requests.get(
-                        endpoint_url,
-                        headers=request_headers,
-                        proxies=proxies,
-                        timeout=max(min(remaining, 30.0), 1.0),
-                        impersonate=PROTOCOL_CHROME_IMPERSONATE,
-                    )
+                    if method == "POST":
+                        response = requests.post(
+                            endpoint_url,
+                            headers=headers,
+                            data=body,
+                            proxies=proxies,
+                            timeout=max(min(remaining, 30.0), 1.0),
+                            impersonate=PROTOCOL_CHROME_IMPERSONATE,
+                        )
+                    else:
+                        response = requests.get(
+                            endpoint_url,
+                            headers=headers,
+                            proxies=proxies,
+                            timeout=max(min(remaining, 30.0), 1.0),
+                            impersonate=PROTOCOL_CHROME_IMPERSONATE,
+                        )
             except Exception as exc:
                 detail = str(exc).replace("\n", " ").strip()
                 last_result = {
@@ -1421,10 +1485,21 @@ def check_chatgpt_access_token(
         max_retries=2,
     )
     if primary.get("state") != "valid":
-        return {
-            "state": str(primary.get("state") or "unknown"),
-            "message": str(primary.get("message") or "AT 验活未确认"),
+        p_state = str(primary.get("state") or "unknown")
+        p_msg = str(primary.get("message") or "AT 验活未确认")
+        res = {
+            "state": p_state,
+            "message": p_msg,
         }
+        if verify_codex:
+            res.update({
+                "web_valid": False,
+                "codex_valid": False,
+                "web_status": p_state,
+                "codex_status": p_state,
+                "client_id": client_id,
+            })
+        return res
 
     workspace = probe(
         "chatgpt.com/backend-api/me",
@@ -1433,10 +1508,65 @@ def check_chatgpt_access_token(
         max_retries=0,
     )
     if workspace.get("state") == "invalid":
-        return {
+        w_msg = str(workspace.get("message") or "工作区不可用")
+        res = {
             "state": "invalid",
-            "message": str(workspace.get("message") or "工作区不可用"),
+            "message": w_msg,
         }
+        if verify_codex:
+            res.update({
+                "web_valid": False,
+                "codex_valid": False,
+                "web_status": "invalid",
+                "codex_status": "invalid",
+                "client_id": client_id,
+            })
+        return res
+
+    web_valid = primary.get("state") == "valid" and workspace.get("state") != "invalid"
+    web_status = "valid" if web_valid else "unknown"
+
+    if verify_codex:
+        codex_res = probe(
+            "chatgpt.com/backend-api/codex/responses",
+            "https://chatgpt.com/backend-api/codex/responses",
+            proxies=workspace_proxies,
+            max_retries=0,
+            method="POST",
+            body=json.dumps({"model": "gpt-5.1-codex", "messages": []}),
+            extra_headers={"Content-Type": "application/json"},
+        )
+        codex_status = str(codex_res.get("state") or "unknown")
+        if codex_status == "invalid":
+            return {
+                "state": "invalid",
+                "message": str(codex_res.get("message") or "Codex 接口鉴权失败 (401 Unauthorized)"),
+                "web_valid": web_valid,
+                "codex_valid": False,
+                "web_status": web_status,
+                "codex_status": "invalid",
+                "client_id": client_id,
+            }
+        if codex_status == "valid":
+            return {
+                "state": "valid",
+                "message": "access token 可用（Codex 直连与网页鉴权均通过）",
+                "web_valid": web_valid,
+                "codex_valid": True,
+                "web_status": web_status,
+                "codex_status": "valid",
+                "client_id": client_id,
+            }
+        return {
+            "state": "valid" if web_valid else "unknown",
+            "message": f"网页端可用；Codex 接口检查未确认：{str(codex_res.get('message') or '无响应')}",
+            "web_valid": web_valid,
+            "codex_valid": False,
+            "web_status": web_status,
+            "codex_status": "unknown",
+            "client_id": client_id,
+        }
+
     if workspace.get("state") == "valid":
         return {
             "state": "valid",

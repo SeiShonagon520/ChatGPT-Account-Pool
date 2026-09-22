@@ -80,10 +80,16 @@ def make_browser_fetch(page: Any, *, timeout_ms: int = 30000) -> BrowserFetchFn:
         with _lock:
             try:
                 request = page.context.request
-                resp = request.get(
+                fetch_options: dict[str, Any] = {
+                    "headers": headers or {},
+                    "timeout": timeout_ms,
+                }
+                if body is not None:
+                    fetch_options["data"] = body
+                resp = request.fetch(
                     url,
-                    headers=headers or {},
-                    timeout=timeout_ms,
+                    method=str(method or "GET").upper(),
+                    **fetch_options,
                 )
                 status = int(resp.status)
                 resp_headers = {k: v for k, v in resp.headers.items()}
@@ -171,10 +177,18 @@ class BrowserFetchPool:
             self._loop = None
 
     async def _async_init(self) -> None:
+        try:
+            from camoufox.addons import DefaultAddons
+            exclude_addons = [DefaultAddons.UBO]
+        except Exception:
+            exclude_addons = None
+
         launch_opts: dict[str, Any] = {
             "headless": self._headless,
             "enable_cache": False,
         }
+        if exclude_addons:
+            launch_opts["exclude_addons"] = exclude_addons
         if self._proxy:
             launch_opts["proxy"] = {"server": self._proxy}
         self._manager = AsyncCamoufox(**launch_opts)
@@ -248,6 +262,7 @@ class BrowserFetchPool:
                             "access_token": result.get("access_token"),
                             "refresh_token": result.get("refresh_token"),
                             "id_token": result.get("id_token"),
+                            "client_id": result.get("client_id") or ("app_EMoamEEZ73f0CkXaXp7hrann" if result.get("refresh_token") else ""),
                             "session_token": result.get("session_token"),
                             "cookies": result.get("cookies"),
                         }.items()
@@ -265,7 +280,7 @@ class BrowserFetchPool:
         *,
         proxy: str | None = None,
         log: Callable[[str], None] | None = None,
-        timeout_seconds: float = 120.0,
+        timeout_seconds: float = 180.0,
         otp_callback: Callable[[], str] | None = None,
         provider_accounts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:

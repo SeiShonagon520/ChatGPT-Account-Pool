@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Download, Edit, ExternalLink, Eye, EyeOff, Mail, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Download, Edit, ExternalLink, Eye, EyeOff, Mail, Plus, RefreshCw, ShieldCheck, Trash2, Upload, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { apiDownload, apiFetch, apiForm, triggerBrowserDownload } from '@/lib/utils'
+import { MaskedField, usePrivacy } from '@/lib/privacy-context'
 
 type AccountListItem = {
   id: number
@@ -12,6 +13,8 @@ type AccountListItem = {
   password: string
   totp_secret: string
   refresh_token_status: string
+  codex_status?: string
+  web_status?: string
   has_refresh_token: boolean
   at_expires_at?: number | null
   has_mailbox?: boolean
@@ -77,6 +80,29 @@ function statePill(value: string) {
       ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
       : 'border-[var(--border)] bg-[var(--bg-pane)] text-[var(--text-muted)]'
   return <span className={`inline-flex min-w-8 justify-center rounded-full border px-2 py-0.5 text-xs ${styles}`}>{label}</span>
+}
+
+function codexPill(value?: string, hasRt?: boolean) {
+  const state = String(value || 'unknown').toLowerCase()
+  if (state === 'valid' && hasRt !== false) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-400 font-medium whitespace-nowrap" title="Codex 直连鉴权通过，已就绪供反代或 Cockpit 唤醒">
+        ⚡️ Codex 就绪
+      </span>
+    )
+  }
+  if (state === 'invalid' || hasRt === false) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[11px] text-red-400 font-medium whitespace-nowrap" title="Codex 接口鉴权失败 (401) 或缺少 Refresh Token，无法在 Cockpit 中直连">
+        ⚡️ Codex 401
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--bg-pane)] px-2 py-0.5 text-[11px] text-[var(--text-muted)] whitespace-nowrap" title="Codex 直连状态未单独确认">
+      ⚡️ Codex 未确认
+    </span>
+  )
 }
 
 function formatAtExpiry(exp?: number | null) {
@@ -751,6 +777,8 @@ function AccountDetailsDialog({
   onUpdated: () => void
 }) {
   const [loading, setLoading] = useState(true)
+  const { privacyMode, maskEmail } = usePrivacy()
+  const [showEmail, setShowEmail] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [copiedKey, setCopiedKey] = useState('')
@@ -891,7 +919,7 @@ function AccountDetailsDialog({
         </div>
 
         <p className="mt-2 text-xs text-[var(--text-muted)] leading-relaxed">
-          给 <span className="font-mono text-sky-400">{email}</span> 填写密码、2FA、邮件地址、手机号和其他备注。
+          给 <span className="font-mono text-sky-400">{privacyMode && !showEmail ? maskEmail(email) : email}</span> 填写密码、2FA、邮件地址、手机号和其他备注。
         </p>
 
         {loading ? (
@@ -907,15 +935,25 @@ function AccountDetailsDialog({
               <div className="flex items-center gap-2">
                 <input
                   type="text"
-                  value={email}
+                  value={privacyMode && !showEmail ? maskEmail(email) : email}
                   readOnly
                   className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/50 px-3.5 py-2.5 font-mono text-sm text-[var(--text-primary)] focus:outline-none"
                 />
+                {privacyMode && (
+                  <button
+                    type="button"
+                    onClick={() => setShowEmail(!showEmail)}
+                    title={showEmail ? '隐藏完整邮箱' : '查看完整邮箱'}
+                    className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/40 p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
+                  >
+                    {showEmail ? <EyeOff className="h-4 w-4 text-sky-400" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => void copyToClipboard(email, 'email')}
                   title="复制邮箱"
-                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/40 p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors"
+                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/40 p-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
                 >
                   <Copy className="h-4 w-4" />
                 </button>
@@ -1161,7 +1199,7 @@ export default function Accounts() {
   const [pageSize, setPageSize] = useState(20)
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'valid' | 'invalid' | 'has_mailbox' | 'has_rt'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'valid' | 'invalid' | 'codex_valid' | 'has_mailbox' | 'has_rt'>('all')
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [batchActionLoading, setBatchActionLoading] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -1327,25 +1365,65 @@ export default function Accounts() {
   ]
   const [exportFormat, setExportFormat] = useState('json')
   const [exporting, setExporting] = useState('')
+  const [exportWarning, setExportWarning] = useState<{
+    total: number
+    ready: number
+    unready: number
+    unreadyAccounts: Array<{ id: number, email: string, reason: string }>
+    isBatch: boolean
+  } | null>(null)
 
-  const exportAccounts = async () => {
-    setExporting(exportFormat)
+  const performExport = async (isBatch: boolean, codexOnly = false, force = false) => {
+    const isTargetFormat = exportFormat === 'sub2api' || exportFormat === 'cockpit'
+    if (isTargetFormat && !force && !codexOnly) {
+      try {
+        const check = await apiFetch('/accounts/export/check-codex-readiness', {
+          method: 'POST',
+          body: JSON.stringify({
+            platform: 'chatgpt',
+            ids: isBatch ? selectedIds : [],
+            select_all: !isBatch,
+          }),
+        }) as any
+        if (check && check.unready_count > 0) {
+          setExportWarning({
+            total: check.total_count,
+            ready: check.ready_count,
+            unready: check.unready_count,
+            unreadyAccounts: check.unready_accounts || [],
+            isBatch,
+          })
+          return
+        }
+      } catch (err: any) {
+        console.warn('Codex readiness check error:', err)
+      }
+    }
+
+    if (isBatch) setBatchActionLoading(true)
+    else setExporting(exportFormat)
     try {
       const { blob, filename } = await apiDownload(`/accounts/export/${exportFormat}`, {
         method: 'POST',
         body: JSON.stringify({
           platform: 'chatgpt',
-          ids: [],
-          select_all: true,
+          ids: isBatch ? selectedIds : [],
+          select_all: !isBatch,
+          codex_only: codexOnly,
+          force,
         }),
       })
       triggerBrowserDownload(blob, filename)
+      setExportWarning(null)
     } catch (err: any) {
       setError(err?.message || '导出失败')
     } finally {
-      setExporting('')
+      if (isBatch) setBatchActionLoading(false)
+      else setExporting('')
     }
   }
+
+  const exportAccounts = () => void performExport(false)
 
   const copyAccount = async (account: AccountListItem) => {
     const lines = [account.email, account.password || '']
@@ -1458,28 +1536,69 @@ export default function Accounts() {
     }
   }
 
-  const handleBatchExport = async () => {
-    if (selectedIds.length === 0) return
-    setBatchActionLoading(true)
-    try {
-      const { blob, filename } = await apiDownload(`/accounts/export/${exportFormat}`, {
-        method: 'POST',
-        body: JSON.stringify({
-          platform: 'chatgpt',
-          ids: selectedIds,
-          select_all: false,
-        }),
-      })
-      triggerBrowserDownload(blob, filename)
-    } catch (err: any) {
-      setError(err?.message || '批量导出失败')
-    } finally {
-      setBatchActionLoading(false)
-    }
-  }
+  const handleBatchExport = () => void performExport(true)
 
   return (
     <div className="space-y-4">
+      {exportWarning ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-xl border border-amber-500/40 bg-[var(--bg-pane)] p-6 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-500/10 text-amber-400">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-[var(--text-primary)]">
+                  选中的账号包含未通过 Codex 直连验证的凭证
+                </h3>
+                <p className="text-xs text-[var(--text-muted)] mt-0.5">
+                  Cockpit 及免翻墙反代依赖官方 Codex OAuth 凭证与 Refresh Token
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3.5 text-xs text-amber-300 space-y-2">
+              <p>
+                在拟导出的 <strong>{exportWarning.total}</strong> 个账号中，检测到 <strong>{exportWarning.unready}</strong> 个账号缺少有效的 Codex 凭证或未完成 401 恢复。直接导入 Cockpit 将导致唤醒失败（401 Unauthorized）。
+              </p>
+              <div className="max-h-36 overflow-y-auto space-y-1 rounded bg-black/30 p-2 font-mono text-[11px]">
+                {exportWarning.unreadyAccounts.map(acc => (
+                  <div key={acc.id} className="flex justify-between gap-2 text-rose-300">
+                    <span className="truncate">{acc.email}</span>
+                    <span className="text-[var(--text-muted)] text-[10px] shrink-0">{acc.reason}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-wrap items-center justify-end gap-2.5">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setExportWarning(null)}
+              >
+                取消
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-amber-500/30 text-amber-300 hover:bg-amber-500/10"
+                onClick={() => void performExport(exportWarning.isBatch, false, true)}
+              >
+                仍然全部导出 ({exportWarning.total})
+              </Button>
+              <Button
+                size="sm"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium"
+                disabled={exportWarning.ready === 0}
+                onClick={() => void performExport(exportWarning.isBatch, true, false)}
+              >
+                仅导出 Codex 正常账号 ({exportWarning.ready})
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {showRegister ? <RegisterDialog onClose={() => setShowRegister(false)} onCreated={(task) => { setShowRegister(false); setCreatedTask(task) }} /> : null}
       {showImport ? (
         <ImportAccountsDialog
@@ -1642,6 +1761,7 @@ export default function Accounts() {
               className="rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm text-[var(--text-primary)]"
             >
               <option value="all">全部状态</option>
+              <option value="codex_valid">⚡️ Codex 直连就绪</option>
               <option value="valid">✅ 正常有效</option>
               <option value="invalid">❌ 401 失效</option>
               <option value="has_mailbox">📧 微软长效托管</option>
@@ -1750,7 +1870,7 @@ export default function Accounts() {
                     </td>
                     <td className="px-4 py-3 font-mono text-[var(--text-primary)]">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span>{account.email}</span>
+                        <MaskedField value={account.email} type="email" canCopy copyLabel="复制邮箱" />
                         {account.has_mailbox ? (
                           <span
                             className="inline-flex items-center gap-1 rounded bg-sky-500/10 px-1.5 py-0.5 text-[11px] font-sans text-sky-400 border border-sky-500/20"
@@ -1762,7 +1882,9 @@ export default function Accounts() {
                         ) : null}
                       </div>
                     </td>
-                    <td className="px-4 py-3 font-mono text-[var(--text-secondary)]">{account.password || '-'}</td>
+                    <td className="px-4 py-3 font-mono text-[var(--text-secondary)]">
+                      <MaskedField value={account.password} type="password" canCopy copyLabel="复制密码" />
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-col gap-1 items-start">
                         <span className={account.has_refresh_token ? 'text-emerald-400 font-medium text-xs' : 'text-[var(--text-muted)] text-xs'}>
@@ -1771,7 +1893,12 @@ export default function Accounts() {
                         {formatAtExpiry(account.at_expires_at)}
                       </div>
                     </td>
-                    <td className="px-4 py-3">{statePill(account.refresh_token_status)}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-col gap-1 items-start">
+                        {statePill(account.refresh_token_status)}
+                        {codexPill(account.codex_status, account.has_refresh_token)}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-[var(--text-secondary)] text-xs">{formatDate(account.created_at)}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1.5">

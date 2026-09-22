@@ -21,7 +21,7 @@ DEFAULT_PROXY_GROUP = "REGISTER-ALL"
 DEFAULT_SLOT_GROUP_PREFIX = "REGISTER-SLOT-"
 DEFAULT_SLOT_PORT_BASE = 7900
 DEFAULT_SLOT_COUNT = 50
-DEFAULT_DELAY_TEST_URL = "https://www.gstatic.com/generate_204"
+DEFAULT_DELAY_TEST_URL = "http://www.gstatic.com/generate_204"
 DEFAULT_NODE_STATE_FILE = Path(__file__).resolve().parent.parent / "data" / ".mihomo_node_state.json"
 DEFAULT_CHATGPT_PREFLIGHT_URL = "https://chatgpt.com/auth/login"
 
@@ -137,11 +137,23 @@ class MihomoRegistrationAllocator:
                 for node in self.nodes
                 if not bool(self.preflight_results.get(node, {}).get("eligible"))
             }
-            self.nodes = [
+            eligible = [
                 node
                 for node in self.nodes
                 if bool(self.preflight_results.get(node, {}).get("eligible"))
             ]
+            if eligible:
+                self.nodes = eligible
+            else:
+                # If preflight rejected all nodes due to transient probe errors,
+                # retain candidate nodes that are not confirmed hard VPN blocks.
+                soft_candidates = [
+                    node
+                    for node in self.nodes
+                    if self.preflight_results.get(node, {}).get("classification") != "vpn_block"
+                ]
+                if soft_candidates:
+                    self.nodes = soft_candidates
         if not self.nodes:
             rejected = ", ".join(
                 f"{node}: {result.get('detail') or result.get('classification')}"
@@ -469,17 +481,27 @@ class MihomoClient:
                 return item
         return {}
 
-    def refresh_group_delay(self) -> None:
+    def refresh_group_delay(
+        self,
+        *,
+        url: str | None = None,
+        timeout_ms: int = 5000,
+    ) -> dict[str, int]:
         group = quote(self.group, safe="")
-        self._request(
-            "GET",
-            f"/group/{group}/delay",
-            timeout=20,
-            params={
-                "timeout": 10000,
-                "url": os.getenv("MIHOMO_DELAY_TEST_URL", DEFAULT_DELAY_TEST_URL),
-            },
-        )
+        test_url = url or os.getenv("MIHOMO_DELAY_TEST_URL", DEFAULT_DELAY_TEST_URL)
+        try:
+            res = self._request(
+                "GET",
+                f"/group/{group}/delay",
+                timeout=max(int(timeout_ms / 1000) + 5, 10),
+                params={
+                    "timeout": timeout_ms,
+                    "url": test_url,
+                },
+            )
+            return res if isinstance(res, dict) else {}
+        except Exception:
+            return {}
 
     def list_proxy_providers(self) -> dict[str, Any]:
         providers = self._request("GET", "/providers/proxies").get("providers") or {}
@@ -537,12 +559,19 @@ class MihomoClient:
             else:
                 disabled.add(normalized)
             self.node_state_file.parent.mkdir(parents=True, exist_ok=True)
+            data = json.dumps({"disabled": sorted(disabled)}, ensure_ascii=False, indent=2)
             temporary = self.node_state_file.with_suffix(self.node_state_file.suffix + ".tmp")
-            temporary.write_text(
-                json.dumps({"disabled": sorted(disabled)}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            temporary.replace(self.node_state_file)
+            try:
+                temporary.write_text(data, encoding="utf-8")
+                temporary.replace(self.node_state_file)
+            except OSError:
+                self.node_state_file.write_text(data, encoding="utf-8")
+            finally:
+                if temporary.exists():
+                    try:
+                        temporary.unlink()
+                    except OSError:
+                        pass
 
     def list_nodes(self, *, refresh: bool = False) -> dict[str, Any]:
         if refresh:
@@ -664,29 +693,52 @@ class MihomoClient:
             }
 
         proxy = self.slot_proxy_url(slot)
-        session = requests.Session()
-        session.trust_env = False
         try:
             timeout = float(os.getenv("MIHOMO_CHATGPT_PREFLIGHT_TIMEOUT_SECONDS", "12"))
         except (TypeError, ValueError):
             timeout = 12.0
+        session = None
         try:
-            response = session.get(
-                os.getenv("MIHOMO_CHATGPT_PREFLIGHT_URL", DEFAULT_CHATGPT_PREFLIGHT_URL),
-                headers={
-                    "user-agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/136.0.0.0 Safari/537.36"
-                    ),
-                    "accept": "text/html,application/xhtml+xml",
-                },
-                proxies={"http": proxy, "https": proxy},
-                timeout=(min(timeout, 6.0), timeout),
-                allow_redirects=True,
-            )
-            status = int(response.status_code or 0)
-            body = re.sub(r"\s+", " ", str(response.text or "")).lower()[:6000]
+            target_url = os.getenv("MIHOMO_CHATGPT_PREFLIGHT_URL", DEFAULT_CHATGPT_PREFLIGHT_URL)
+            response = None
+            try:
+                from curl_cffi import requests as curl_requests
+
+                response = curl_requests.get(
+                    target_url,
+                    headers={
+                        "user-agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/136.0.0.0 Safari/537.36"
+                        ),
+                        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    },
+                    proxies={"http": proxy, "https": proxy},
+                    timeout=(min(timeout, 6.0), timeout),
+                    impersonate="chrome136",
+                    allow_redirects=True,
+                )
+            except (ImportError, Exception):
+                # Fallback to standard requests if curl_cffi fails or is unavailable
+                session = requests.Session()
+                session.trust_env = False
+                response = session.get(
+                    target_url,
+                    headers={
+                        "user-agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/136.0.0.0 Safari/537.36"
+                        ),
+                        "accept": "text/html,application/xhtml+xml",
+                    },
+                    proxies={"http": proxy, "https": proxy},
+                    timeout=(min(timeout, 6.0), timeout),
+                    allow_redirects=True,
+                )
+            status = int(getattr(response, "status_code", 0) or 0)
+            body = re.sub(r"\s+", " ", str(getattr(response, "text", "") or "")).lower()[:6000]
             hard_marker = next(
                 (marker for marker in _CHATGPT_HARD_BLOCK_MARKERS if marker in body),
                 "",
@@ -702,14 +754,14 @@ class MihomoClient:
                     "status": status,
                     "detail": hard_marker,
                 }
-            if challenge_marker:
+            if challenge_marker or status == 403:
                 # A real Camoufox context may solve this.  Keep it eligible,
                 # but let the browser retry/rotation path decide at runtime.
                 return {
                     "eligible": True,
                     "classification": "cloudflare_challenge",
                     "status": status,
-                    "detail": challenge_marker,
+                    "detail": challenge_marker or f"HTTP {status}",
                 }
             eligible = status == 200
             return {
@@ -718,7 +770,7 @@ class MihomoClient:
                 "status": status,
                 "detail": f"HTTP {status}",
             }
-        except requests.RequestException as exc:
+        except Exception as exc:
             return {
                 "eligible": False,
                 "classification": "network_error",
@@ -726,7 +778,8 @@ class MihomoClient:
                 "detail": str(exc)[:240],
             }
         finally:
-            session.close()
+            if session is not None:
+                session.close()
 
     def preflight_registration_nodes(
         self, node_names: list[str]

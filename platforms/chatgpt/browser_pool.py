@@ -265,6 +265,12 @@ class BrowserProcessPool:
             )
 
     async def _launch_browser(self):
+        try:
+            from camoufox.addons import DefaultAddons
+            exclude_addons = [DefaultAddons.UBO]
+        except Exception:
+            exclude_addons = None
+
         manager = AsyncCamoufox(
             headless=self.headless,
             # Registration pages do not need visual assets.  Camoufox's
@@ -272,6 +278,7 @@ class BrowserProcessPool:
             # Python route callback on every request.
             block_images=self.block_images,
             enable_cache=False,
+            exclude_addons=exclude_addons,
         )
         browser = await manager.__aenter__()
         return manager, browser

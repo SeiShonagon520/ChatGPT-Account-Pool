@@ -1041,6 +1041,9 @@ def matches_status_filter(graph: dict[str, Any], status: str) -> bool:
     expected = _text(status)
     if not expected:
         return True
+    if expected == "codex_valid":
+        overview = _safe_dict(graph.get("overview"))
+        return _text(overview.get("codex_status")) == "valid"
     return expected in {
         _text(graph.get("display_status")),
         _text(graph.get("lifecycle_status")),

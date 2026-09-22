@@ -118,8 +118,17 @@ def main() -> None:
         provider_names=args.provider_names,
     )
     temporary = args.destination.with_suffix(args.destination.suffix + ".tmp")
-    temporary.write_text(output, encoding="utf-8")
-    temporary.replace(args.destination)
+    try:
+        temporary.write_text(output, encoding="utf-8")
+        temporary.replace(args.destination)
+    except OSError:
+        args.destination.write_text(output, encoding="utf-8")
+    finally:
+        if temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

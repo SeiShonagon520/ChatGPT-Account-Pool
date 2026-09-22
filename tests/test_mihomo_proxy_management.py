@@ -98,3 +98,42 @@ def test_proxy_node_can_be_disabled_through_api(client, monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert listed.json()["nodes"][0]["enabled"] is False
+
+
+def test_mihomo_config_manager_write_handles_ebusy_on_docker_bind_mount(monkeypatch, tmp_path):
+    import errno
+    from pathlib import Path
+
+    config_path = tmp_path / "config.yaml"
+    manager = MihomoConfigManager(config_path)
+
+    # First write to create initial file
+    manager.create_source(
+        name="initial-subscription",
+        url="https://proxy.example/first",
+        interval=1800,
+    )
+
+    # Now simulate Docker bind-mount where Path.replace fails with EBUSY (Errno 16)
+    original_replace = Path.replace
+
+    def fake_replace(self, target):
+        if str(self).endswith(".tmp"):
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fake_replace)
+
+    # Adding another source should succeed via the fallback
+    manager.create_source(
+        name="second-subscription",
+        url="https://proxy.example/second",
+        interval=3600,
+    )
+
+    sources = manager.list_sources()
+    assert [s["name"] for s in sources] == ["initial-subscription", "second-subscription"]
+    document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert "second-subscription" in document["proxy-providers"]
+    assert not (tmp_path / "config.yaml.tmp").exists()
+

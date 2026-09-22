@@ -60,8 +60,20 @@ class MihomoConfigManager:
             width=4096,
         )
         temporary = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
-        temporary.write_text(text, encoding="utf-8")
-        temporary.replace(self.config_path)
+        try:
+            temporary.write_text(text, encoding="utf-8")
+            temporary.replace(self.config_path)
+        except OSError:
+            # When config_path is a Docker bind mount (e.g. single-file mount),
+            # atomic rename fails with EBUSY (Errno 16). Fall back to writing
+            # directly in place to preserve the mount and inode across containers.
+            self.config_path.write_text(text, encoding="utf-8")
+        finally:
+            if temporary.exists():
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
 
     @staticmethod
     def _validate_url(url: str) -> str:
@@ -123,6 +135,28 @@ class MihomoConfigManager:
                 group.pop("proxies", None)
         document["proxy-groups"] = groups
 
+    @staticmethod
+    def _sync_rules(document: dict[str, Any], providers: dict[str, Any]) -> None:
+        rules = document.get("rules") or []
+        if not isinstance(rules, list):
+            rules = []
+        rule_set = set(rules)
+        for config in providers.values():
+            if isinstance(config, dict):
+                url = str(config.get("url") or "").strip()
+                if url:
+                    hostname = urlsplit(url).hostname
+                    if hostname:
+                        rule = f"DOMAIN,{hostname},DIRECT"
+                        if rule not in rule_set:
+                            match_idx = next(
+                                (i for i, r in enumerate(rules) if str(r).startswith("MATCH,")),
+                                len(rules),
+                            )
+                            rules.insert(match_idx, rule)
+                            rule_set.add(rule)
+        document["rules"] = rules
+
     def list_sources(self) -> list[dict[str, Any]]:
         with self._lock:
             document = self._read()
@@ -159,6 +193,7 @@ class MihomoConfigManager:
             )
             document["proxy-providers"] = providers
             self._sync_registration_groups(document, list(providers))
+            self._sync_rules(document, providers)
             self._write(document)
         return next(item for item in self.list_sources() if item["name"] == normalized_name)
 
@@ -193,6 +228,7 @@ class MihomoConfigManager:
                     updated[provider_name] = config
             document["proxy-providers"] = updated
             self._sync_registration_groups(document, list(updated))
+            self._sync_rules(document, updated)
             self._write(document)
         return next(item for item in self.list_sources() if item["name"] == normalized_name)
 
@@ -208,6 +244,7 @@ class MihomoConfigManager:
             del providers[normalized_name]
             document["proxy-providers"] = providers
             self._sync_registration_groups(document, list(providers))
+            self._sync_rules(document, providers)
             self._write(document)
 
     @staticmethod

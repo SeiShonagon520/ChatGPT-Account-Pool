@@ -1848,6 +1848,9 @@ def _run_single_refresh_token_check(
     login_attempted = False
     login_succeeded = False
     recovery_state = ""
+    has_codex_token = bool(extra.get("refresh_token") or getattr(account, "refresh_token", None)) or (
+        str(extra.get("client_id") or "") == "app_EMoamEEZ73f0CkXaXp7hrann"
+    )
     result = (
         {
             "state": "invalid",
@@ -1860,42 +1863,60 @@ def _run_single_refresh_token_check(
             account_id=account_id_for_check,
             timeout_seconds=max(remaining(30), 1.0),
             browser_fetch=browser_fetch,
+            verify_codex=has_codex_token,
         )
     )
     state = str(result.get("state") or "unknown")
+    initial_at_valid = (state == "valid")
+    has_refresh_token = bool(
+        str(extra.get("refresh_token") or extra.get("refreshToken") or getattr(account, "refresh_token", None) or "").strip()
+    )
+    has_login_credentials = bool(account.password) or bool(extra.get("totp_secret")) or bool(extra.get("provider_accounts"))
+    missing_codex_rt = (not has_refresh_token) and has_login_credentials
+
     # This task is a saved-AT liveness check. A stored RT must never bypass
     # the AT check: an explicit HTTP 401/403 always enters protocol login.
     if verify_only:
-        # Browser verification phase: persist the result immediately. The
-        # relogin for invalid accounts runs later in a concurrent protocol
-        # phase, but a valid result must not leave a stale 401 badge behind.
+        codex_status = str(result.get("codex_status") or ("valid" if result.get("codex_valid") else ("invalid" if state == "invalid" else "unknown")))
+        web_status = str(result.get("web_status") or ("valid" if result.get("web_valid") else ("invalid" if state == "invalid" else "unknown")))
         _update_credential_check_status(
             account_id,
             summary_updates={
                 "refresh_token_status": state,
                 "valid": state == "valid",
+                "codex_status": codex_status,
+                "web_status": web_status,
                 "refresh_token_checked_at": _utcnow_iso(),
                 "refresh_token_check_message": str(result.get("message") or ""),
                 "refresh_token_check_method": "browser_access_token",
                 "relogin_status": "",
             },
         )
+        login_needed = (state in {"invalid", "missing"}) or missing_codex_rt
         return {
             "account_id": account_id,
             "email": account.email,
             "state": state,
             "message": str(result.get("message") or ""),
-            "login_required": state in {"invalid", "missing"},
+            "login_required": login_needed,
             "login_attempted": False,
             "login_succeeded": False,
             "recovery_state": "",
         }
-    if state in {"invalid", "missing"}:
+
+    needs_recovery = (state in {"invalid", "missing"}) or (missing_codex_rt and not verify_only)
+
+    if needs_recovery:
         login_required = True
         if event_callback:
-            event_callback(
-                f"{account.email}: {str(result.get('message') or 'AT 已失效')}，开始恢复"
-            )
+            if state in {"invalid", "missing"}:
+                event_callback(
+                    f"{account.email}: {str(result.get('message') or 'AT 已失效')}，开始恢复"
+                )
+            else:
+                event_callback(
+                    f"{account.email}: 网页会话正常但缺少 Codex Refresh Token，自动启动补齐换证流程"
+                )
         if is_cancelled():
             return {
                 "account_id": account_id,
@@ -1926,12 +1947,29 @@ def _run_single_refresh_token_check(
             if event_callback:
                 event_callback(f"{account.email}: 检测到保存的 Refresh Token，优先尝试 RT 刷新换取新 AT...")
             from platforms.chatgpt.credential_checks import refresh_chatgpt_tokens
+            rt_proxy = login_proxy
             rt_result = refresh_chatgpt_tokens(
                 refresh_token,
                 client_id=client_id,
-                proxy=login_proxy,
+                proxy=rt_proxy,
                 timeout_seconds=min(remaining(30), 20.0),
             )
+            # 遭遇 429 限流时尝试轮换干净节点重试
+            if rt_result.get("state") == "unknown" and any(m in str(rt_result.get("message") or "").lower() for m in ("429", "rate_limit", "rate limit")):
+                for _ in range(2):
+                    if callable(login_proxy_rotate_callback):
+                        new_proxy = login_proxy_rotate_callback()
+                        if new_proxy:
+                            rt_proxy = new_proxy
+                            rt_result = refresh_chatgpt_tokens(
+                                refresh_token,
+                                client_id=client_id,
+                                proxy=rt_proxy,
+                                timeout_seconds=min(remaining(30), 20.0),
+                            )
+                            if rt_result.get("state") == "valid":
+                                break
+
             if rt_result.get("state") == "valid" and rt_result.get("tokens", {}).get("access_token"):
                 if event_callback:
                     event_callback(f"{account.email}: RT 刷新成功，直接换取到新 AT（已规避网页人机挑战）")
@@ -1965,10 +2003,14 @@ def _run_single_refresh_token_check(
                 )
             recovery_message = str(recovery.get("message") or "")
             recovery_lower = recovery_message.lower()
+            protocol_lacks_rt = (
+                recovery.get("state") == "valid"
+                and not bool(recovery.get("tokens", {}).get("refresh_token"))
+            )
             if (
-                recovery.get("state") != "valid"
-                and recovery.get("state") != "banned"
+                (recovery.get("state") not in {"valid", "banned", "missing_mailbox"} or protocol_lacks_rt)
                 and not is_cancelled()
+                and (callable(browser_login) or str(extra.get("totp_secret") or "").strip())
             ):
                 active_browser_login = browser_login
                 standalone_pool = None
@@ -1988,8 +2030,9 @@ def _run_single_refresh_token_check(
                             event_callback(f"无法初始化 Camoufox 降级登录: {pool_err}")
                 if callable(active_browser_login):
                     if event_callback:
+                        reason = "协议登录缺少 Refresh Token" if protocol_lacks_rt else f"协议登录未成功（{recovery_message}）"
                         event_callback(
-                            f"{account.email}: 协议登录未成功（{recovery_message}），切换 Camoufox 执行密码 + 邮箱/TOTP 登录"
+                            f"{account.email}: {reason}，切换 Camoufox 执行密码 + 邮箱/TOTP 登录"
                         )
                     try:
                         browser_recovery = active_browser_login(
@@ -2026,12 +2069,18 @@ def _run_single_refresh_token_check(
                             }
                         elif browser_recovery.get("state") == "valid":
                             recovery = browser_recovery
+                            recovery["recovery_method"] = "browser_login"
                             recovery["message"] = (
                                 browser_message
                                 or "browser login issued a fresh access token"
                             )
                         else:
                             recovery = browser_recovery
+                            if recovery_message and recovery_message != browser_message:
+                                recovery["message"] = (
+                                    f"协议登录失败（{recovery_message}）；"
+                                    f"浏览器登录失败（{browser_message}）"
+                                )
                     finally:
                         if standalone_pool is not None:
                             try:
@@ -2050,14 +2099,26 @@ def _run_single_refresh_token_check(
             if fresh_access_token:
                 # Protocol login success is not an AT liveness result. OpenAI
                 # may invalidate the newly issued token before it is used.
+                has_codex_token = bool(fresh_tokens.get("refresh_token")) or (
+                    str(fresh_tokens.get("client_id") or "") == "app_EMoamEEZ73f0CkXaXp7hrann"
+                )
                 fresh_check = check_chatgpt_access_token(
                     fresh_access_token,
                     proxy=check_proxy,
                     account_id="",
                     timeout_seconds=max(remaining(30), 1.0),
                     browser_fetch=browser_fetch,
+                    verify_codex=has_codex_token,
                 )
                 fresh_state = str(fresh_check.get("state") or "unknown")
+                is_browser_token = (
+                    recovery.get("recovery_method") == "browser_login"
+                    or "browser login" in str(recovery.get("message") or "").lower()
+                )
+                if (fresh_state == "unknown" or fresh_check.get("web_valid")) and is_browser_token:
+                    fresh_state = "valid"
+                    recovery["message"] = f"{str(recovery.get('message') or '')}（浏览器会话已确认为有效）"
+
                 if fresh_state != "valid":
                     recovery_state = f"fresh_at_{fresh_state or 'unknown'}"
                     recovery["state"] = (
@@ -2195,22 +2256,51 @@ def _run_single_refresh_token_check(
             # A timeout, mailbox failure, network error, or incomplete login
             # does not prove that the account is banned. Keep the account and
             # persist the failed recovery attempt for a later retry.
-            state = "invalid"
-            check_method = "protocol_login"
+            rec_msg = str(recovery.get("message") or "未确认")
             relogin_status = "failed"
-            if event_callback:
-                event_callback(
-                    f"{account.email}: 协议登录未成功，账号保留："
-                    f"{str(recovery.get('message') or '未确认')}"
-                )
-            result = {
-                **result,
-                "state": state,
-                "message": (
-                    f"{str(result.get('message') or '')}；协议重新登录失败："
-                    f"{str(recovery.get('message') or '未确认')}"
-                ).strip("；"),
-            }
+            if initial_at_valid:
+                state = "valid"
+                check_method = "browser_access_token"
+                if any(m in rec_msg.lower() for m in ("rate_limit", "rate limit", "too_many_requests", "429")):
+                    recovery_state = "rate_limited"
+                    if event_callback:
+                        event_callback(
+                            f"{account.email}: 换取 Codex RT 遭遇频控限流 (429)，原网页会话仍有效，保留稍后重试"
+                        )
+                elif event_callback:
+                    event_callback(
+                        f"{account.email}: 原网页会话有效，但换取 Codex RT 未成功（{rec_msg}），账号保留"
+                    )
+                result = {
+                    **result,
+                    "state": state,
+                    "message": (
+                        f"{str(result.get('message') or '')}；换取 Codex RT 未成功："
+                        f"{rec_msg}"
+                    ).strip("；"),
+                }
+            else:
+                state = "invalid"
+                check_method = "protocol_login"
+                if any(m in rec_msg.lower() for m in ("rate_limit", "rate limit", "too_many_requests", "429")):
+                    recovery_state = "rate_limited"
+                    if event_callback:
+                        event_callback(
+                            f"{account.email}: 登录遭遇频控限流 (rate_limit_exceeded)，已轮换节点重试仍受限，账号保留供稍后重试"
+                        )
+                elif event_callback:
+                    event_callback(
+                        f"{account.email}: 协议登录未成功，账号保留："
+                        f"{rec_msg}"
+                    )
+                result = {
+                    **result,
+                    "state": state,
+                    "message": (
+                        f"{str(result.get('message') or '')}；协议重新登录失败："
+                        f"{rec_msg}"
+                    ).strip("；"),
+                }
     if is_cancelled():
         return {
             "account_id": account_id,
@@ -2219,11 +2309,25 @@ def _run_single_refresh_token_check(
             "message": "任务已取消，未写入验活结果",
         }
     tokens = dict(result.get("tokens") or {})
+    final_codex_status = str(
+        result.get("codex_status")
+        or (
+            "valid"
+            if state == "valid" and bool(tokens.get("refresh_token") or extra.get("refresh_token"))
+            else ("invalid" if state == "invalid" else "unknown")
+        )
+    )
+    final_web_status = str(
+        result.get("web_status")
+        or ("valid" if state == "valid" else ("invalid" if state == "invalid" else "unknown"))
+    )
     _update_credential_check_status(
         account_id,
         summary_updates={
             "refresh_token_status": state,
             "valid": state == "valid",
+            "codex_status": final_codex_status,
+            "web_status": final_web_status,
             "refresh_token_checked_at": _utcnow_iso(),
             "refresh_token_check_message": str(result.get("message") or ""),
             "refresh_token_check_method": check_method,
@@ -2243,7 +2347,12 @@ def _run_single_refresh_token_check(
     }
 
 
-def _probe_chatgpt_login_route(proxy: str | None) -> tuple[bool, str]:
+def _probe_chatgpt_login_route(
+    proxy: str | None,
+    *args: Any,
+    timeout: float = 15.0,
+    **kwargs: Any,
+) -> tuple[bool, str]:
     from curl_cffi import requests as curl_requests
 
     from platforms.chatgpt.constants import CHATGPT_APP
@@ -2252,7 +2361,7 @@ def _probe_chatgpt_login_route(proxy: str | None) -> tuple[bool, str]:
     request_kwargs: dict[str, Any] = {
         "allow_redirects": True,
         "impersonate": PROTOCOL_CHROME_IMPERSONATE,
-        "timeout": 15,
+        "timeout": max(float(timeout), 1.0),
     }
     normalized_proxy = str(proxy or "").strip()
     if normalized_proxy:
@@ -2453,13 +2562,15 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
         try:
             from core.mihomo_client import mihomo_client
 
+            logger.log("正在对所有代理节点进行网络连通性测速预检（Ping）...", event_type="progress")
+            mihomo_client.refresh_group_delay(url="http://www.gstatic.com/generate_204", timeout_ms=8000)
             refresh_allocator = mihomo_client.create_registration_allocator(
                 preferred_node=proxy_node or None,
                 preflight=True,
             )
             logger.log(
                 f"401 恢复登录启用独立 Mihomo slot："
-                f"{refresh_allocator.node_count} 个节点，挑战时自动轮换",
+                f"{refresh_allocator.node_count} 个节点预检连通，挑战时自动轮换",
                 event_type="progress",
             )
         except Exception as exc:
@@ -2488,9 +2599,26 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
                 lease = refresh_allocator.acquire()
                 account_proxy = lease.proxy
                 rotate_callback = lease.rotate
+                # 验活/恢复前先 ping 探测当前代理节点的联通性
+                for probe_attempt in range(3):
+                    try:
+                        reachable, probe_detail = _probe_chatgpt_login_route(account_proxy, timeout=5.0)
+                    except TypeError:
+                        reachable, probe_detail = _probe_chatgpt_login_route(account_proxy)
+                    if reachable:
+                        break
+                    failed_node = lease.node
+                    logger.log(
+                        f"账号 {account_id} 代理节点 {failed_node} 联通性异常（{probe_detail}），正在自动轮换可用节点...",
+                        level="warning",
+                        event_type="progress",
+                        detail={"account_id": account_id},
+                    )
+                    lease.rotate()
+                    account_proxy = lease.proxy
                 logger.log(
                     f"账号 {account_id} 恢复登录使用 Mihomo slot {lease.slot:02d}，"
-                    f"节点 {lease.node}",
+                    f"节点 {lease.node}（联通性预检正常）",
                     event_type="progress",
                     detail={"account_id": account_id},
                 )

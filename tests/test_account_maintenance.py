@@ -42,6 +42,8 @@ def test_account_list_is_server_paginated_and_redacts_credentials(client):
         "password",
         "totp_secret",
         "refresh_token_status",
+        "codex_status",
+        "web_status",
         "has_refresh_token",
         "created_at",
         "at_expires_at",

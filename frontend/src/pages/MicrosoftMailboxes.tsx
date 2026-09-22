@@ -21,6 +21,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { apiFetch, apiForm } from '@/lib/utils'
+import { MaskedField } from '@/lib/privacy-context'
 
 type MailboxStats = {
   total: number
@@ -652,7 +653,7 @@ export default function MicrosoftMailboxes() {
                     <td className="px-4 py-3 font-mono text-[var(--text-primary)]">
                       <div className="flex items-center gap-1.5">
                         <Mail className="h-3.5 w-3.5 text-sky-400" />
-                        <span>{mb.email}</span>
+                        <MaskedField value={mb.email} type="email" canCopy copyLabel="复制邮箱" />
                       </div>
                     </td>
                     <td className="px-4 py-3">

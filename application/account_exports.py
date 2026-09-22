@@ -680,11 +680,70 @@ class AccountExportsService:
             content=content,
         )
 
+    def check_accounts_codex_readiness(self, selection: AccountExportSelection) -> dict:
+        """检查选中的账号是否满足 Codex 直连及 Cockpit 要求。"""
+        # 始终加载全部选中账号以进行评估
+        base_selection = AccountExportSelection(
+            platform=selection.platform or CHATGPT_PLATFORM,
+            ids=list(selection.ids),
+            select_all=selection.select_all,
+            status_filter=selection.status_filter,
+            search_filter=selection.search_filter,
+            codex_only=False,
+            force=False,
+        )
+        items = self.repository.select_for_export(base_selection)
+        ready: list[dict] = []
+        unready: list[dict] = []
+        for item in items:
+            payload = _chatgpt_export_payload(item)
+            access_token = str(payload.get("access_token") or "").strip()
+            refresh_token = str(payload.get("refresh_token") or "").strip()
+            client_id = str(payload.get("client_id") or "").strip()
+            codex_status = str((item.overview or {}).get("codex_status") or "").strip()
+
+            reasons: list[str] = []
+            if not access_token:
+                reasons.append("缺少 access_token")
+            if not refresh_token:
+                reasons.append("缺少 refresh_token（无法在 Cockpit 自动换票）")
+            if codex_status == "invalid":
+                reasons.append("Codex 接口鉴权失败 (401)")
+            if client_id and client_id != DEFAULT_CHATGPT_CLIENT_ID:
+                reasons.append(f"Client ID 非 Codex 官方（当前为 {client_id}）")
+
+            if reasons:
+                unready.append({
+                    "id": item.id,
+                    "email": item.email,
+                    "reason": "；".join(reasons),
+                })
+            else:
+                ready.append({
+                    "id": item.id,
+                    "email": item.email,
+                })
+
+        return {
+            "total_count": len(items),
+            "ready_count": len(ready),
+            "unready_count": len(unready),
+            "ready_accounts": ready,
+            "unready_accounts": unready,
+        }
+
     def _load_chatgpt_items(self, selection: AccountExportSelection) -> list[AccountRecord]:
         selection.platform = selection.platform or CHATGPT_PLATFORM
         if selection.platform != CHATGPT_PLATFORM:
             raise ValueError("仅支持 ChatGPT 账号导出")
-        return self.repository.select_for_export(selection)
+        items = self.repository.select_for_export(selection)
+        if getattr(selection, "codex_only", False):
+            items = [
+                item for item in items
+                if bool(_credential_value(item, "refresh_token", "refreshToken"))
+                and str((item.overview or {}).get("codex_status") or "") != "invalid"
+            ]
+        return items
 
     def export_any2api(self, selection: AccountExportSelection) -> ExportArtifact:
         """导出账号为 Any2API admin.json 兼容格式。

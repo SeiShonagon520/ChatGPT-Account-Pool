@@ -728,13 +728,26 @@ class AccountsService:
                 mailbox_email = str(pa.get("login_identifier") or pa.get("display_name") or pa.get("email") or "")
                 break
 
+        rt_status = str(overview.get("refresh_token_status") or "unknown")
+        codex_status = str(
+            overview.get("codex_status")
+            or (
+                "valid"
+                if rt_status == "valid" and has_refresh_token
+                else ("invalid" if rt_status == "invalid" else "unknown")
+            )
+        )
+        web_status = str(overview.get("web_status") or rt_status)
+
         return {
             "id": item.id,
             "platform": item.platform,
             "email": item.email,
             "password": item.password,
             "totp_secret": totp_secret,
-            "refresh_token_status": str(overview.get("refresh_token_status") or "unknown"),
+            "refresh_token_status": rt_status,
+            "codex_status": codex_status,
+            "web_status": web_status,
             "has_refresh_token": has_refresh_token,
             "at_expires_at": at_expires_at,
             "has_mailbox": has_mailbox,

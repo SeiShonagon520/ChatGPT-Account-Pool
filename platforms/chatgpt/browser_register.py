@@ -970,6 +970,12 @@ class ChatGPTBrowserRegister:
 
     def run(self, email: str, password: str) -> dict:
         launch_opts: dict[str, Any] = {"headless": self.headless}
+        try:
+            from camoufox.addons import DefaultAddons
+
+            launch_opts["exclude_addons"] = [DefaultAddons.UBO]
+        except Exception:
+            pass
         proxy_config = _build_proxy_config(self.proxy)
         if proxy_config:
             launch_opts["proxy"] = proxy_config

@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title aBaiFreeGPT - Docker 重新构建与启动
+title ChatGPT-Account-Pool - Docker 重新构建与启动
 
 echo ========================================================
-echo   正在以 Docker 模式重新构建并启动 aBaiFreeGPT 最新版...
+echo   正在以 Docker 模式构建并启动 ChatGPT-Account-Pool...
 echo   访问地址: http://127.0.0.1:8000
 echo ========================================================
 echo.

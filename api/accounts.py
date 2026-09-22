@@ -59,6 +59,8 @@ class BatchExportRequest(BaseModel):
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+    codex_only: bool = False
+    force: bool = False
 
 
 class Sub2ApiAgentIdentityUploadRequest(BatchExportRequest):
@@ -138,6 +140,24 @@ def export_accounts_csv(body: BatchExportRequest):
     return _stream_artifact(artifact)
 
 
+@router.post("/export/check-codex-readiness")
+def check_accounts_codex_readiness(body: BatchExportRequest):
+    try:
+        return exports_service.check_accounts_codex_readiness(
+            AccountExportSelection(
+                platform=body.platform,
+                ids=body.ids,
+                select_all=body.select_all,
+                status_filter=body.status_filter or "",
+                search_filter=body.search_filter or "",
+                codex_only=body.codex_only,
+                force=body.force,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.post("/export/sub2api")
 def export_accounts_sub2api(body: BatchExportRequest):
     try:
@@ -148,6 +168,8 @@ def export_accounts_sub2api(body: BatchExportRequest):
                 select_all=body.select_all,
                 status_filter=body.status_filter or "",
                 search_filter=body.search_filter or "",
+                codex_only=body.codex_only,
+                force=body.force,
             )
         )
     except ValueError as exc:
@@ -234,6 +256,8 @@ def export_accounts_cockpit(body: BatchExportRequest):
                 select_all=body.select_all,
                 status_filter=body.status_filter or "",
                 search_filter=body.search_filter or "",
+                codex_only=body.codex_only,
+                force=body.force,
             )
         )
     except ValueError as exc:

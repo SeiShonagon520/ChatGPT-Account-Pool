@@ -185,11 +185,9 @@ def test_browser_pool_closes_the_async_camoufox_manager(monkeypatch):
     assert pool.startup_concurrency == 2
     assert startup_gates == [pool._startup_sem]
     assert all(
-        manager.kwargs == {
-            "headless": True,
-            "block_images": True,
-            "enable_cache": False,
-        }
+        manager.kwargs.get("headless") is True
+        and manager.kwargs.get("block_images") is True
+        and manager.kwargs.get("enable_cache") is False
         for manager in _FakeAsyncManager.instances
     )
 

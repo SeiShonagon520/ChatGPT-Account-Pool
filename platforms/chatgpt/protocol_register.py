@@ -903,7 +903,7 @@ class ChatGPTProtocolRegister:
         for attempt in range(1, _OAUTH_INIT_MAX_ATTEMPTS + 1):
             try:
                 return self._initialize_codex_registration_once(email)
-            except ChatGPTCloudflareChallengeError as exc:
+            except (ChatGPTCloudflareChallengeError, ChatGPTRateLimitError) as exc:
                 can_retry = (
                     self._session_factory is not None
                     and callable(self.proxy_rotate_callback)
@@ -911,12 +911,15 @@ class ChatGPTProtocolRegister:
                 )
                 if not can_retry or not self._rotate_proxy_after_challenge():
                     raise
+                is_rate_limit = isinstance(exc, ChatGPTRateLimitError)
                 delay = min(
-                    _OAUTH_INIT_RETRY_BASE_SECONDS * (2 ** (attempt - 1)),
+                    (5.0 if is_rate_limit else _OAUTH_INIT_RETRY_BASE_SECONDS) * (2 ** (attempt - 1)),
                     _OAUTH_INIT_RETRY_MAX_SECONDS,
                 )
+                reason = "OAuth rate limit" if is_rate_limit else "Cloudflare challenge"
+                stage_name = getattr(exc, "stage", None) or getattr(exc, "code", "codex_oauth")
                 self.log(
-                    f"Cloudflare challenge at {exc.stage}; retrying direct Codex OAuth "
+                    f"{reason} at {stage_name}; retrying direct Codex OAuth "
                     f"on a new proxy in {delay:.1f}s "
                     f"({attempt + 1}/{_OAUTH_INIT_MAX_ATTEMPTS})"
                 )
@@ -1083,9 +1086,15 @@ class ChatGPTProtocolRegister:
             raise ChatGPTCloudflareChallengeError("OpenAI login method", response)
         payload = _response_json(response)
         _raise_if_explicit_account_ban(payload, stage="OpenAI 登录方式选择")
+        err_text = _response_error(response, payload)
+        if getattr(response, "status_code", 0) == 429 or any(
+            marker in err_text.lower()
+            for marker in ("rate_limit", "rate limit", "too_many_requests")
+        ):
+            raise ChatGPTRateLimitError(err_text or "OpenAI 登录频控限流 (rate_limit_exceeded)")
         if getattr(response, "status_code", 0) >= 400 or payload.get("error"):
             raise RuntimeError(
-                f"OpenAI 登录方式选择失败: {_response_error(response, payload)}"
+                f"OpenAI 登录方式选择失败: {err_text}"
             )
         page_type = _authorization_page_type(payload)
         if page_type not in {
@@ -1152,8 +1161,14 @@ class ChatGPTProtocolRegister:
             raise ChatGPTCloudflareChallengeError("OpenAI password login", response)
         payload = _response_json(response)
         _raise_if_explicit_account_ban(payload, stage="OpenAI 密码登录")
+        err_text = _response_error(response, payload)
+        if getattr(response, "status_code", 0) == 429 or any(
+            marker in err_text.lower()
+            for marker in ("rate_limit", "rate limit", "too_many_requests")
+        ):
+            raise ChatGPTRateLimitError(err_text or "OpenAI 密码登录频控限流 (rate_limit_exceeded)")
         if getattr(response, "status_code", 0) >= 400 or payload.get("error"):
-            raise RuntimeError(f"ChatGPT protocol login failed: {_response_error(response, payload)}")
+            raise RuntimeError(f"ChatGPT protocol login failed: {err_text}")
         return {
             "continue_url": str(response.headers.get("location") or ""),
             "response": response,
@@ -1722,20 +1737,23 @@ class ChatGPTProtocolRegister:
             result = self._session_result(email, password)
             self.log("ChatGPT protocol login completed and issued a session token")
             return result
-        except ChatGPTCloudflareChallengeError as exc:
+        except (ChatGPTCloudflareChallengeError, ChatGPTRateLimitError) as exc:
             retries = int(getattr(self, "_login_cloudflare_retries", 0) or 0)
             if retries >= _OAUTH_INIT_MAX_ATTEMPTS - 1:
                 raise
             if callable(self.proxy_rotate_callback) and not self._rotate_proxy_after_challenge():
                 raise
             self._login_cloudflare_retries = retries + 1
+            is_rate_limit = isinstance(exc, ChatGPTRateLimitError) or "rate limit" in str(getattr(exc, "stage", "") or getattr(exc, "code", "")).lower()
             delay = min(
-                _OAUTH_INIT_RETRY_BASE_SECONDS * (2 ** retries),
+                (5.0 if is_rate_limit else _OAUTH_INIT_RETRY_BASE_SECONDS) * (2 ** retries),
                 _OAUTH_INIT_RETRY_MAX_SECONDS,
             )
+            reason = "OAuth rate limit" if is_rate_limit else "Cloudflare challenge"
+            stage_name = getattr(exc, "stage", None) or getattr(exc, "code", "password_login")
             retry_target = "on a new proxy" if callable(self.proxy_rotate_callback) else "after delay"
             self.log(
-                f"Cloudflare challenge at {exc.stage}; retrying password login "
+                f"{reason} at {stage_name}; retrying password login "
                 f"{retry_target} in {delay:.1f}s "
                 f"({retries + 2}/{_OAUTH_INIT_MAX_ATTEMPTS})"
             )

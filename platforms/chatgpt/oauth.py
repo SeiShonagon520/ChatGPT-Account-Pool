@@ -101,8 +101,9 @@ def generate_oauth_url(
         "state": state,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        "prompt": prompt,
     }
+    if prompt:
+        params["prompt"] = prompt
     if client_id == CODEX_CLIENT_ID:
         params["id_token_add_organizations"] = "true"
         params["codex_cli_simplified_flow"] = "true"
