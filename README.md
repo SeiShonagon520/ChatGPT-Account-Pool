@@ -4,7 +4,7 @@
 
 # 🚀 ChatGPT-Account-Pool
 ### 高可用 ChatGPT 账号池与 Token 智能维护系统
-**High-Availability ChatGPT Account & Token Pool with Auto-Refresh, Camoufox Turnstile Solver & Mihomo Proxy Integration**
+**High-Availability ChatGPT Account & Token Pool with Auto-Refresh, Codex Direct Connect, Camoufox Turnstile Solver & Mihomo Proxy Integration**
 
 [![GitHub Stars](https://img.shields.io/github/stars/SeiShonagon520/ChatGPT-Account-Pool?style=flat-square&logo=github&color=gold)](https://github.com/SeiShonagon520/ChatGPT-Account-Pool)
 [![Release](https://img.shields.io/badge/release-v2.0.0-emerald.svg?style=flat-square)](https://github.com/SeiShonagon520/ChatGPT-Account-Pool/releases)
@@ -14,7 +14,7 @@
 [![React](https://img.shields.io/badge/frontend-React%2018%20%7C%20Vite-61dafb.svg?style=flat-square&logo=react)](frontend/)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg?style=flat-square)](LICENSE)
 
-[English](#-english-overview) · [简体中文](#-项目简介) · [快速开始](#-快速开始-docker-compose) · [核心特性](#-核心特性) · [API 文档](#-api-接口与下游集成)
+[English](#-english-overview) · [简体中文](#-项目简介) · [界面预览](#-界面预览-screenshots) · [核心特性](#-核心特性) · [快速开始](#-快速开始-docker-compose) · [API 文档](#-api-接口与下游集成)
 
 </div>
 
@@ -22,51 +22,100 @@
 
 ## 📖 项目简介
 
-**ChatGPT-Account-Pool** 是一套专为生产环境与大模型中转站（如 One-API / New-API / chatgpt2api）打造的**高可用 ChatGPT 账号资产池与 Token 智能调度管理系统**。
+**ChatGPT-Account-Pool** 是一套专为生产环境与大模型中转站（如 One-API / New-API / chatgpt2api / Cockpit Tools）打造的**高可用 ChatGPT 账号资产池与 Token 智能调度管理系统**。
 
-面对 OpenAI 严格的风控、Cloudflare Turnstile 验证盾、节点黑名单以及频繁的 401 令牌失效，本项目将**协议高速直连**、**Camoufox 真实指纹浏览器**、**Mihomo (Clash) 代理池原生协同**以及**微软母体邮箱池**深度融合，实现账号从**自动注册、存活监测、失效抢救、过盾自愈到下游分发**的全生命周期自动化运作。
+面对 OpenAI 严格的风控、Cloudflare Turnstile 验证盾、节点黑名单、401 令牌失效以及下游 Cockpit 工具直连鉴权难题，本项目将**协议高速直连**、**Camoufox 真实指纹浏览器**、**Codex 官方长效 Refresh Token 静默签发**、**Mihomo (Clash) 代理池原生协同**、**前端全局防偷窥脱敏**以及**微软母体邮箱池**深度融合，实现账号从**自动注册、存活监测、失效抢救、过盾自愈到下游分发**的全生命周期自动化运作。
+
+---
+
+## 📸 界面预览 (Screenshots)
+
+<div align="center">
+
+### 1. 账号资产看板与 Codex 直连双状态监控 (内置防偷窥保护)
+<img src="docs/images/accounts_dashboard.png" alt="账号资产看板与防偷窥保护" width="880"/>
+
+> *全景展示存活率与账号资产，实时追踪 Web UI 与 `⚡️ Codex 直连就绪` 双状态。右上角常驻全局防窥开关，敏感邮箱与密码智能掩码脱敏。*
+
+<br/>
+
+### 2. 账号详情抽屉与 2FA TOTP 动态码实时生成
+<img src="docs/images/account_detail_modal.png" alt="账号详情与实时 2FA TOTP" width="700"/>
+
+> *支持查看与编辑凭证参数，内置 TOTP 算法，**实时计算并展示 6 位动态验证码（带秒级倒计时圆环）**，单项眼睛图标支持随时临时查看与安全明文复制。*
+
+<br/>
+
+### 3. 401 验活抢救全链路诊断日志与凭据提取
+<img src="docs/images/task_logs_diagnosis.png" alt="401 验活日志与全链路诊断" width="880"/>
+
+> *实时任务流与可视化指标看板，详尽追踪协议交互、Camoufox 浏览器渲染及 Codex 凭据换取细节，精准定位失败根因并提供专用导出。*
+
+<br/>
+
+### 4. 原生 Mihomo 代理池管理与智能 Slot 分流
+<img src="docs/images/proxy_pool_settings.png" alt="Mihomo 代理池管理" width="880"/>
+
+> *原生集成 Metacubex Mihomo 核心，支持标准 Clash 订阅导入与自动脱敏防护，实现多 Slot 端口分流与遭遇 429 频控时的自适应节点轮换。*
+
+<br/>
+
+### 5. 微软母体邮箱池与裂变用量监控
+<img src="docs/images/microsoft_mailboxes.png" alt="微软邮箱池与裂变监控" width="880"/>
+
+> *集中管控裂变注册母体邮箱，支持高并发批量 OAuth 探活、失效隔离与实时用量看板预警。*
+
+</div>
 
 ---
 
 ## ✨ 核心特性
 
-### 1. ⚡ 401 深度验活与自动故障自愈 (Auto Revive)
-- **多维度探活**：通过 Camoufox 浏览器或官方 API 并发检测 Access Token (AT) 与 Refresh Token (RT) 存活状态。
-- **自动收信抢救**：针对 401 失活账号，系统自动调度关联的微软母体邮箱，异步收取最新邮箱验证码，通过协议重登并刷回全新的有效 AT/RT，全自动化救号。
-- **专属 SUB 导出**：支持对本次 401 恢复成功的账号进行一键专属导出，标准 Sub2API 格式直接对接聚合分发客户端。
+### 1. ⚡ 401 深度验活与 Codex 官方直连双状态体系
+- **Web UI 与 Codex 直连双状态分离**：深入区分网页端 Access Token 与 Codex 官方直连接口（`backend-api/codex/responses`），彻底解决“面板显示正常但导入 Cockpit / 免翻墙反代唤醒报 401 Unauthorized”的痛点。
+- **状态徽章直观呈现**：列表并排展示常规状态与 **`⚡️ Codex 就绪`** 状态，一目了然筛选出可直接供直连工具调用的优质账号。
+- **自动收信重登抢救 (Auto Revive)**：针对失效账号，自动调度关联微软邮箱异步收取最新验证码，完成全自动救号与凭据持久化。
 
-### 2. 🛡️ Camoufox 真实指纹浏览器与 Cloudflare Turnstile 自动破解
-- **内置指纹浏览器**：采用 Camoufox (定制防检测 Firefox 内核)，完美绕过浏览器特征指纹检测。
-- **自动化过盾**：内置智能 Cloudflare Turnstile Solver，自动定位 iframe 挑战、计算坐标并模拟人工点击打勾。
-- **智能降级与恢复**：日常验活走极速纯协议模式；遇到密码页人机盾阻断时，系统自动无缝唤起 Camoufox 浏览器过盾并签发新 Token。
+### 2. 🔄 Camoufox 真实指纹浏览器与静默 PKCE 签发长效 RT
+- **内置指纹浏览器**：采用 Camoufox (定制防检测 Firefox 内核)，完美绕过浏览器特征指纹与 Cloudflare Turnstile 人机盾。
+- **静默换取 Codex 凭据 (Silent PKCE Minting)**：在 Camoufox 浏览器已通过验证并成功登录的会话上下文下，自动构造 Codex 官方 OAuth 授权请求并拦截回调，通过带官方指纹的客户端换取带官方 `client_id=app_EMoamEEZ73f0CkXaXp7hrann` 的长效 Refresh Token。救活后的账号无缝兼容 Cockpit 直连。
 
-### 3. 🌐 原生 Mihomo 代理池集成与智能 Slot 轮换
-- **双容器协同**：`app` 与 `mihomo` 容器原生互通，一键 Docker Compose 启动即自带专业代理调度能力。
-- **订阅一键同步**：支持标准 Clash / Mihomo 订阅链接，自动解析 Hysteria2 / Vless / SS / Trojan 等全协议节点。
-- **智能 Slot 分流**：支持多账号分配独立代理 Slot 端口，遇到 Cloudflare 挑战或封禁时自动毫秒级轮换可用节点。
+### 3. 🛡️ Cockpit / Sub2API 导出安全拦截守卫 (Export Safety Guard)
+- **就绪度预检拦截**：用户批量导出 `sub2api` 或 `cockpit` 配置时，系统自动预检选中账号是否缺少 Refresh Token、Client ID 是否属于官方客户端以及 Codex 接口是否有效。
+- **一键智能过滤**：拦截弹窗清晰列出未就绪账号及具体原因，并提供**【仅导出 Codex 正常账号】**快捷按钮，杜绝失效凭据污染生产下游。
 
-### 4. 🗂️ 全格式账号导入与自动解析
-- **多格式兼容**：支持导入 **JSON 文件**、**Sub2API 格式**、**CPA 格式**、**纯文本行格式**。
-- **智能字段提取**：自动识别邮箱、密码、Access Token、Refresh Token、Session Token、2FA Secret 并填充入库。
+### 4. 🛡️ 前端全局“防偷窥 / 隐私脱敏模式” (Privacy Masking Mode)
+- **全局一键开关**：界面顶部醒目常驻 `[ 🛡️ 防窥保护：已开启 / 已关闭 ]` 胶囊按钮，状态在本地 `localStorage` 持久化，适用于演示、截屏与日常防窥。
+- **智能关键位脱敏**：
+  - **代理订阅 URL**：自动遮蔽长串 Token，仅保留域名特征与前后字符。
+  - **账号密码**：统一掩码显示为 `••••••••`。
+  - **账号邮箱 / 微软邮箱**：智能保留首尾字符打码（如 `qu****1a@icloud.com`）。
+  - **2FA 秘钥 / 备注**：敏感位遮蔽。
+- **单项眼睛显隐与安全明文复制**：每个字段配备眼睛图标独立临时显隐；**复制按钮复制的永远是真实完整的明文字符串**，完全不影响日常导入与配置使用。
 
-### 5. 🔍 账号详情抽屉与 2FA TOTP 动态码实时生成
-- **一键查看详情**：点击列表右侧「编辑」按钮，进入账号细节参数面板。
+### 5. 🌐 原生 Mihomo 代理池集成与智能 Slot 轮换
+- **双容器协同架构**：`app` 与 `mihomo` 容器原生互通，一键 Docker Compose 启动即自带专业代理调度能力。
+- **标准订阅一键同步**：支持 Clash / Mihomo 订阅链接，自动解析 Hysteria2 / Vless / SS / Trojan 等全协议节点。
+- **自适应频控轮换**：遇到 OpenAI 登录频控（Rate Limit / 429）或节点阻断时，自动在干净节点间轮换并执行退避重试。
+
+### 6. 🔍 账号详情抽屉与 2FA TOTP 动态码实时生成
+- **一键查看详情**：点击列表右侧「编辑」按钮，进入账号细节参数抽屉。
 - **实时 2FA 动态码**：只要账号绑定了 TOTP Secret，前端**实时计算并展示 6 位动态验证码**，提供实时倒计时与一键复制功能。
 - **便捷编辑**：支持修改账号密码、添加自定义备注、更新 Token，方便人工介入与凭据维护。
 
-### 6. 📬 微软母体邮箱池与裂变用量监控
+### 7. 📬 微软母体邮箱池与裂变用量监控
 - **一键批量测活**：对邮箱池内所有微软母体邮箱（Outlook / Hotmail）发起高并发 OAuth 探活，自动检测凭据有效性。
 - **失效邮箱隔离**：测活失败或鉴权失效的邮箱自动置为「已隔离」并禁用，防止裂变注册任务中断。
 - **用量仪表盘**：实时统计母体总数、剩余可用裂变次数、已用/总限额比例，并在配额告急时醒目预警。
 
-### 7. 🔐 账号数据库加密快照与跨机迁移
+### 8. 📋 任务实时监控与全链路诊断日志
+- **多状态回溯**：支持「运行中 / 已完成 / 全部任务」分类筛选，任务结束后历史记录持久化保存。
+- **全景恢复详情**：直观展示 401 验活抢救指标（需恢复数、尝试登录数、成功解救数、失败数），支持一键复制成功账号与专用导出。
+- **智能错误定位**：内置底层诊断日志面板，记录浏览器上下文、OAuth 换证步骤及网络交互明细，支持一键复制完整日志。
+
+### 9. 🔐 账号数据库加密快照与跨机迁移
 - **加密快照**：使用 PBKDF2 与 XSalsa20-Poly1305 认证加密，打包 SQLite 事务快照、元数据清单以及解密主密钥生成 `.fgmbak` 文件。
 - **跨机无损迁移**：新设备一键恢复，直接无损解密全部敏感凭据。
-
-### 8. 📋 任务实时监控与全链路诊断日志
-- **多状态回溯**：支持「运行中 / 已完成 / 全部任务」分类筛选，任务结束后历史记录持久化保存，不丢失任何执行痕迹。
-- **全景恢复详情**：直观展示 401 验活抢救指标（需恢复数、尝试登录数、成功解救数、失败数），支持一键复制成功账号与专用导出。
-- **智能错误定位**：自动提取失败根本原因（频控拦截、节点封禁、挑战超时），内置完整底层诊断日志面板与一键复制。
 
 ---
 
@@ -128,26 +177,30 @@ python main.py
 
 ## 🔌 API 接口与下游集成
 
-本项目提供标准的 RESTful API，可无缝对接 **One-API**、**New-API** 或第三方聚合平台：
+本项目提供标准的 RESTful API，可无缝对接 **One-API**、**New-API**、**Cockpit Tools** 或第三方聚合分发平台：
 
 | 接口端点 | 方法 | 说明 |
 | :--- | :--- | :--- |
 | `/api/accounts` | `GET` | 获取账号列表，支持状态筛选与分页 |
 | `/api/accounts/export` | `GET` | 批量导出账号（支持 json, sub2api, cpa 等格式） |
-| `/api/accounts/check-refresh-tokens` | `POST` | 触发 401 验活与自动抢救任务 |
-| `/api/accounts/import` | `POST` | 批量导入账号（支持 JSON / Sub / 纯文本） |
+| `/api/accounts/export/check-codex-readiness` | `POST` | 批量预检账号 Codex 直连就绪度与 Refresh Token 有效性 |
+| `/api/accounts/check-refresh-tokens` | `POST` | 触发 401 深度验活与自动抢救任务（支持 Camoufox 静默换证） |
+| `/api/accounts/import` | `POST` | 批量导入账号（支持 JSON / Sub / CPA / 纯文本） |
 | `/api/mihomo/proxies` | `GET` | 获取当前 Mihomo 代理池节点与延迟状态 |
+| `/api/tasks` | `GET` | 获取后台任务列表、恢复统计与全链路执行日志 |
 
 ---
 
 ## 🌐 English Overview
 
-**ChatGPT-Account-Pool** is a production-grade, high-availability ChatGPT account pool and token maintenance platform designed for developers and LLM gateways (such as One-API and New-API).
+**ChatGPT-Account-Pool** is a production-grade, high-availability ChatGPT account pool and token maintenance platform designed for developers, LLM gateways (such as One-API and New-API), and Codex direct connect clients (such as Cockpit Tools).
 
 ### Key Highlights:
-- **Auto 401 Recovery**: Automatically detects expired access tokens, receives email verification codes via Microsoft mailbox integration, and recovers accounts via direct OAuth protocol.
-- **Camoufox & Cloudflare Turnstile Bypass**: Built-in anti-detect browser engine capable of automatically detecting and clicking Cloudflare Turnstile checkboxes.
-- **Native Mihomo Proxy Pool**: Dual-container architecture with native proxy subscription, slot port mapping, latency testing, and auto-rotation on IP blocks.
+- **Codex Direct Connect & Dual State Tracking**: Distinguishes between Web UI sessions and official Codex OAuth credentials, tracking `⚡️ Codex Valid` readiness to eliminate 401 Unauthorized errors in downstream clients.
+- **Silent PKCE Long-lived Token Minting**: Camoufox browser context silently initiates official OAuth PKCE flow to acquire official Codex `client_id=app_EMoamEEZ73f0CkXaXp7hrann` Refresh Tokens.
+- **Export Safety Guard**: Pre-checks accounts during export to prevent unready or invalid credentials from entering production.
+- **Global Privacy Protection Mode**: Intelligent front-end masking for proxy subscription URLs, passwords, emails, and 2FA secrets with one-click toggle and plaintext copy.
+- **Native Mihomo Proxy Pool**: Dual-container architecture with native proxy subscription, slot port mapping, latency testing, and auto-rotation on rate limits or IP blocks.
 - **Universal Import/Export**: Supports JSON, Sub2API, CPA, and plaintext formats.
 - **Real-time 2FA**: Live TOTP 6-digit code generator with countdown directly on the web UI.
 
