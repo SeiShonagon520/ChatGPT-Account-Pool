@@ -223,7 +223,8 @@ def _parse_json_account(
     if "overview" not in extra:
         extra["overview"] = {
             "platform": platform,
-            "refresh_token_status": "valid" if extra.get("refresh_token") else "unknown",
+            "access_token_status": "not_checked" if extra.get("access_token") else "missing",
+            "refresh_token_status": "not_checked" if extra.get("refresh_token") else "missing",
             "validity_status": "valid" if extra.get("access_token") else "unknown",
             "lifecycle_status": "registered",
             "plan_state": "free",
@@ -448,7 +449,8 @@ def parse_account_import_lines(
                 extra = {
                     "overview": {
                         "platform": default_platform,
-                        "refresh_token_status": "unknown",
+                        "access_token_status": "not_checked",
+                        "refresh_token_status": "missing",
                         "validity_status": "valid",
                         "lifecycle_status": "registered",
                         "plan_state": "free",
@@ -519,7 +521,8 @@ def parse_account_import_lines(
         extra: dict = {
             "overview": {
                 "platform": default_platform,
-                "refresh_token_status": "unknown",
+                "access_token_status": "not_checked",
+                "refresh_token_status": "not_checked",
                 "validity_status": "unknown",
                 "lifecycle_status": "registered",
                 "plan_state": "free",
@@ -705,9 +708,11 @@ class AccountsService:
 
         # Extract Access Token expiration
         at_expires_at = None
+        has_access_token = False
         for cred in item.credentials:
             if cred.get("key") in {"access_token", "accessToken"}:
                 val = str(cred.get("value") or "").strip()
+                has_access_token = bool(val)
                 at_expires_at = _extract_jwt_exp(val)
                 if at_expires_at:
                     break
@@ -728,16 +733,21 @@ class AccountsService:
                 mailbox_email = str(pa.get("login_identifier") or pa.get("display_name") or pa.get("email") or "")
                 break
 
-        rt_status = str(overview.get("refresh_token_status") or "unknown")
-        codex_status = str(
-            overview.get("codex_status")
-            or (
-                "valid"
-                if rt_status == "valid" and has_refresh_token
-                else ("invalid" if rt_status == "invalid" else "unknown")
-            )
+        access_token_status = str(overview.get("access_token_status") or "")
+        if not access_token_status:
+            if overview.get("refresh_token_status"):
+                access_token_status = str(overview.get("refresh_token_status") or "unknown")
+            else:
+                access_token_status = "not_checked" if has_access_token else "missing"
+        rt_status = (
+            str(overview.get("refresh_token_status") or "unknown")
+            if has_refresh_token and overview.get("refresh_token_status_updated_at")
+            else ("not_checked" if has_refresh_token else "missing")
         )
-        web_status = str(overview.get("web_status") or rt_status)
+        codex_status = str(overview.get("codex_status") or "unknown")
+        if rt_status == "invalid" and codex_status == "unknown":
+            codex_status = "invalid"
+        web_status = str(overview.get("web_status") or access_token_status)
 
         return {
             "id": item.id,
@@ -745,7 +755,9 @@ class AccountsService:
             "email": item.email,
             "password": item.password,
             "totp_secret": totp_secret,
+            "access_token_status": access_token_status,
             "refresh_token_status": rt_status,
+            "recovery_state": str(overview.get("recovery_state") or ""),
             "codex_status": codex_status,
             "web_status": web_status,
             "has_refresh_token": has_refresh_token,

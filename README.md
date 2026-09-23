@@ -72,9 +72,11 @@
 ## ✨ 核心特性
 
 ### 1. ⚡ 401 深度验活与 Codex 官方直连双状态体系
-- **Web UI 与 Codex 直连双状态分离**：深入区分网页端 Access Token 与 Codex 官方直连接口（`backend-api/codex/responses`），彻底解决“面板显示正常但导入 Cockpit / 免翻墙反代唤醒报 401 Unauthorized”的痛点。
-- **状态徽章直观呈现**：列表并排展示常规状态与 **`⚡️ Codex 就绪`** 状态，一目了然筛选出可直接供直连工具调用的优质账号。
-- **自动收信重登抢救 (Auto Revive)**：针对失效账号，自动调度关联微软邮箱异步收取最新验证码，完成全自动救号与凭据持久化。
+- **AT、RT、网页与 Codex 状态分开记录**：Access Token（AT）验活、Refresh Token（RT）检查、网页工作区状态和 Codex 接口状态分别呈现。没有实际请求 RT 时显示“未检查”，不会用 AT 结果代替 RT 结果。
+- **按证据恢复凭据**：先检查 AT；AT 可用时不触发登录。AT 失效或缺失时，优先尝试已保存 RT，并保存接口返回的轮换凭据；RT 被明确判定失效后，再用账号密码与邮箱验证码/TOTP 重新登录，必要时回退到 Camoufox。
+- **保守分类认证响应**：普通 403、Cloudflare 挑战、限流及网络错误记为未确认；工作区 402 单独标记为受限，不据此认定 AT 失效。RT 只有在响应明确拒绝凭据时才标记失效。
+- **缺少验证邮箱时保留账号**：没有可用邮箱/TOTP 时不删除账号，标记“待补邮箱 / TOTP”；再次检查仍先尝试 RT，只有 RT 也无法恢复时才停止密码/验证码登录。
+- **状态徽章与任务进度**：列表分别显示 AT、WEB、RT、Codex 状态及待补资料/待复查标记；任务统计使用“尝试恢复凭据”，覆盖 RT 刷新与登录恢复。
 
 ### 2. 🔄 Camoufox 真实指纹浏览器与静默 PKCE 签发长效 RT
 - **内置指纹浏览器**：采用 Camoufox (定制防检测 Firefox 内核)，完美绕过浏览器特征指纹与 Cloudflare Turnstile 人机盾。
@@ -196,7 +198,11 @@ python main.py
 **ChatGPT-Account-Pool** is a production-grade, high-availability ChatGPT account pool and token maintenance platform designed for developers, LLM gateways (such as One-API and New-API), and Codex direct connect clients (such as Cockpit Tools).
 
 ### Key Highlights:
-- **Codex Direct Connect & Dual State Tracking**: Distinguishes between Web UI sessions and official Codex OAuth credentials, tracking `⚡️ Codex Valid` readiness to eliminate 401 Unauthorized errors in downstream clients.
+- **Separate AT, RT, Web, and Codex Statuses**: Access Token checks, actual Refresh Token checks, workspace access, and Codex endpoint readiness are reported independently. An unchecked RT is never inferred as valid from an AT result.
+- **Evidence-based 401 Recovery**: Checks the AT first; when it is invalid or missing, tries the stored RT before password-based login. Explicit RT rejection can fall back to password plus email OTP/TOTP, with Camoufox as a browser fallback when available.
+- **Conservative Authentication Classification**: Unclassified 403 responses, Cloudflare challenges, rate limits, and network errors remain inconclusive. Workspace 402 is reported as restricted rather than proof of an invalid AT.
+- **Mailbox-safe Recovery**: Accounts without a usable mailbox or TOTP are retained and marked for follow-up. Later checks still try RT refresh before skipping password-based recovery.
+- **Account Status and Recovery Progress**: The UI separates AT, Web, RT, and Codex badges and reports pending mailbox/RT follow-up states.
 - **Silent PKCE Long-lived Token Minting**: Camoufox browser context silently initiates official OAuth PKCE flow to acquire official Codex `client_id=app_EMoamEEZ73f0CkXaXp7hrann` Refresh Tokens.
 - **Export Safety Guard**: Pre-checks accounts during export to prevent unready or invalid credentials from entering production.
 - **Global Privacy Protection Mode**: Intelligent front-end masking for proxy subscription URLs, passwords, emails, and 2FA secrets with one-click toggle and plaintext copy.

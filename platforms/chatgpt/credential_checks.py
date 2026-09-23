@@ -126,6 +126,17 @@ def _response_detail_code(response: Any) -> str:
 
 
 _BAN_CODES = frozenset({"account_deactivated", "account_suspended", "account_banned"})
+_TOKEN_REJECTION_CODES = frozenset(
+    {
+        "invalid_token",
+        "token_expired",
+        "access_token_expired",
+        "invalid_grant",
+        "unauthorized",
+        "authentication_error",
+        "session_ended",
+    }
+)
 _BAN_CODE_PATTERN = re.compile(
     r"(?<![a-z0-9_])(account_(?:deactivated|suspended|banned))(?![a-z0-9_])",
     re.IGNORECASE,
@@ -184,43 +195,39 @@ def _has_explicit_ban_marker(response: Any, payload: dict[str, Any] | None = Non
 
 
 def _is_invalid_refresh_response(status_code: int, payload: dict[str, Any], text: str) -> bool:
-    """Return true when the saved refresh credential must be renewed."""
-    # For account maintenance, OpenAI HTTP 401/403 are stale-credential signals:
-    # 401 is unauthorized (session ended / revoked token), 403 is forbidden.
-    if status_code in {401, 403}:
-        return True
-    if status_code != 400:
-        return False
+    """Return true only when the response explicitly rejects the refresh token."""
     raw_error = payload.get("error")
-    error = (
-        raw_error
-        if isinstance(raw_error, str)
-        else str((raw_error or {}).get("code") or "")
-    ).strip().lower()
+    if isinstance(raw_error, str):
+        error = raw_error.strip().lower()
+    elif isinstance(raw_error, dict):
+        error = str(raw_error.get("code") or raw_error.get("type") or "").strip().lower()
+    else:
+        error = str(payload.get("code") or payload.get("type") or "").strip().lower()
     error_msg = str((raw_error or {}).get("message") or "") if isinstance(raw_error, dict) else ""
     description = str(
         payload.get("error_description")
         or error_msg
+        or (raw_error if isinstance(raw_error, str) else "")
         or payload.get("message")
         or text
         or ""
     ).lower()
-    return (
-        error in {"invalid_grant", "invalid_token", "refresh_token_invalidated", "unauthorized"}
-        or any(
-            marker in description
-            for marker in (
-                "session has ended",
-                "session_ended",
-                "refresh_token_invalidated",
-                "invalid_grant",
-                "invalid_token",
-                "token has been revoked",
-            )
-        )
-        or (
-            "refresh" in description
-            and any(marker in description for marker in ("invalid", "expired", "revoked"))
+    if error in {"invalid_grant", "invalid_token", "refresh_token_invalidated"}:
+        return True
+    if error == "unauthorized":
+        return status_code in {400, 401}
+    return status_code == 400 and any(
+        marker in description
+        for marker in (
+            "session has ended",
+            "session_ended",
+            "refresh_token_invalidated",
+            "invalid_grant",
+            "invalid_token",
+            "token has been revoked",
+            "refresh token is invalid",
+            "refresh token expired",
+            "refresh token revoked",
         )
     )
 
@@ -1317,13 +1324,27 @@ def check_chatgpt_access_token(
                 "http_status": status_code,
             }
         if endpoint_name.endswith("/codex/responses") and status_code == 400:
+            if detail_code.strip().lower() in _TOKEN_REJECTION_CODES:
+                return {
+                    "state": "invalid",
+                    "message": f"Codex 接口明确拒绝凭据 HTTP 400（{endpoint_name}{detail_suffix}）",
+                    "transient": False,
+                    "http_status": status_code,
+                }
             return {
-                "state": "valid",
-                "message": f"HTTP 200/400（{endpoint_name}，鉴权通过）",
+                "state": "unknown",
+                "message": f"Codex 接口返回 HTTP 400，不能据此确认鉴权（{endpoint_name}）",
                 "transient": False,
                 "http_status": status_code,
             }
         if status_code == 401:
+            if _is_cloudflare_challenge_response(response):
+                return {
+                    "state": "unknown",
+                    "message": f"Cloudflare challenge returned HTTP 401（{endpoint_name}）",
+                    "transient": True,
+                    "http_status": status_code,
+                }
             return {
                 "state": "invalid",
                 "message": f"access token 返回 HTTP 401（{endpoint_name}{detail_suffix}）",
@@ -1331,9 +1352,23 @@ def check_chatgpt_access_token(
                 "http_status": status_code,
             }
         if status_code == 402:
+            if detail_code.strip().lower() in _TOKEN_REJECTION_CODES:
+                return {
+                    "state": "invalid",
+                    "message": f"接口明确拒绝凭据 HTTP 402（{endpoint_name}{detail_suffix}）",
+                    "transient": False,
+                    "http_status": status_code,
+                }
+            if "chatgpt.com/backend-api/" in endpoint_name:
+                return {
+                    "state": "restricted",
+                    "message": f"工作区返回 HTTP 402，工作区或套餐受限（{endpoint_name}{detail_suffix}）",
+                    "transient": False,
+                    "http_status": status_code,
+                }
             return {
-                "state": "invalid",
-                "message": f"工作区返回 HTTP 402（{endpoint_name}{detail_suffix}）",
+                "state": "unknown",
+                "message": f"HTTP 402，不能据此判定 access token 失效（{endpoint_name}{detail_suffix}）",
                 "transient": False,
                 "http_status": status_code,
             }
@@ -1345,9 +1380,16 @@ def check_chatgpt_access_token(
                     "transient": True,
                     "http_status": status_code,
                 }
+            if detail_code.strip().lower() in _TOKEN_REJECTION_CODES:
+                return {
+                    "state": "invalid",
+                    "message": f"接口明确拒绝凭据 HTTP 403（{endpoint_name}{detail_suffix}）",
+                    "transient": False,
+                    "http_status": status_code,
+                }
             return {
-                "state": "invalid",
-                "message": f"access token 返回 HTTP 403（{endpoint_name}{detail_suffix}）",
+                "state": "unknown",
+                "message": f"HTTP 403，未确认是凭据失效（{endpoint_name}{detail_suffix}）",
                 "transient": False,
                 "http_status": status_code,
             }
@@ -1495,8 +1537,8 @@ def check_chatgpt_access_token(
             res.update({
                 "web_valid": False,
                 "codex_valid": False,
-                "web_status": p_state,
-                "codex_status": p_state,
+                "web_status": "not_checked",
+                "codex_status": "not_checked",
                 "client_id": client_id,
             })
         return res
@@ -1507,24 +1549,8 @@ def check_chatgpt_access_token(
         proxies=workspace_proxies,
         max_retries=0,
     )
-    if workspace.get("state") == "invalid":
-        w_msg = str(workspace.get("message") or "工作区不可用")
-        res = {
-            "state": "invalid",
-            "message": w_msg,
-        }
-        if verify_codex:
-            res.update({
-                "web_valid": False,
-                "codex_valid": False,
-                "web_status": "invalid",
-                "codex_status": "invalid",
-                "client_id": client_id,
-            })
-        return res
-
-    web_valid = primary.get("state") == "valid" and workspace.get("state") != "invalid"
-    web_status = "valid" if web_valid else "unknown"
+    web_status = str(workspace.get("state") or "unknown")
+    web_valid = web_status == "valid"
 
     if verify_codex:
         codex_res = probe(
@@ -1537,20 +1563,10 @@ def check_chatgpt_access_token(
             extra_headers={"Content-Type": "application/json"},
         )
         codex_status = str(codex_res.get("state") or "unknown")
-        if codex_status == "invalid":
-            return {
-                "state": "invalid",
-                "message": str(codex_res.get("message") or "Codex 接口鉴权失败 (401 Unauthorized)"),
-                "web_valid": web_valid,
-                "codex_valid": False,
-                "web_status": web_status,
-                "codex_status": "invalid",
-                "client_id": client_id,
-            }
         if codex_status == "valid":
             return {
                 "state": "valid",
-                "message": "access token 可用（Codex 直连与网页鉴权均通过）",
+                "message": "access token 可用（/v1/me 与 Codex 接口均通过）",
                 "web_valid": web_valid,
                 "codex_valid": True,
                 "web_status": web_status,
@@ -1558,24 +1574,21 @@ def check_chatgpt_access_token(
                 "client_id": client_id,
             }
         return {
-            "state": "valid" if web_valid else "unknown",
-            "message": f"网页端可用；Codex 接口检查未确认：{str(codex_res.get('message') or '无响应')}",
+            "state": "valid",
+            "message": (
+                f"access token 可用（/v1/me）；网页状态 {web_status}；"
+                f"Codex 状态 {codex_status}：{str(codex_res.get('message') or '无响应')}"
+            ),
             "web_valid": web_valid,
-            "codex_valid": False,
+            "codex_valid": codex_status == "valid",
             "web_status": web_status,
-            "codex_status": "unknown",
+            "codex_status": codex_status,
             "client_id": client_id,
         }
 
-    if workspace.get("state") == "valid":
-        return {
-            "state": "valid",
-            "message": "access token 可用（api.openai.com/v1/me；工作区正常）",
-        }
     return {
         "state": "valid",
-        "message": (
-            "access token 可用（api.openai.com/v1/me）；"
-            f"工作区检查未确认：{str(workspace.get('message') or '无响应')}"
-        ),
+        "message": f"access token 可用（api.openai.com/v1/me）；工作区状态 {web_status}：{str(workspace.get('message') or '无响应')}",
+        "web_valid": web_valid,
+        "web_status": web_status,
     }

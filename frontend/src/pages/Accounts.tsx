@@ -12,7 +12,9 @@ type AccountListItem = {
   email: string
   password: string
   totp_secret: string
+  access_token_status?: string
   refresh_token_status: string
+  recovery_state?: string
   codex_status?: string
   web_status?: string
   has_refresh_token: boolean
@@ -59,42 +61,61 @@ function formatDate(value: string | null) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
-function statePill(value: string) {
+function statePill(value: string, prefix: string, missingLabel = '待复验', invalidLabel = '401') {
   const state = String(value || 'unknown').toLowerCase()
   const isYes = state === 'invalid'
   const isNo = state === 'valid'
-  const label = isYes
-    ? '401'
-    : isNo
-      ? '正常'
-      : state === 'checking'
-        ? '校验中'
-        : state === 'not_checked'
-          ? '未校验'
-          : state === 'missing'
-            ? '待复验'
-            : '未确认'
+  const isRestricted = state === 'restricted'
+  const label = isRestricted
+    ? '受限'
+    : isYes
+      ? invalidLabel
+      : isNo
+        ? '正常'
+        : state === 'checking'
+          ? '校验中'
+          : state === 'not_checked'
+            ? '未校验'
+            : state === 'missing'
+              ? missingLabel
+              : '未确认'
   const styles = isYes
     ? 'border-red-500/30 bg-red-500/10 text-red-400'
-    : isNo
-      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-      : 'border-[var(--border)] bg-[var(--bg-pane)] text-[var(--text-muted)]'
-  return <span className={`inline-flex min-w-8 justify-center rounded-full border px-2 py-0.5 text-xs ${styles}`}>{label}</span>
+    : isRestricted
+      ? 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+      : isNo
+        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+        : 'border-[var(--border)] bg-[var(--bg-pane)] text-[var(--text-muted)]'
+  return <span className={`inline-flex min-w-8 justify-center rounded-full border px-2 py-0.5 text-xs ${styles}`}>{prefix} {label}</span>
 }
 
 function codexPill(value?: string, hasRt?: boolean) {
   const state = String(value || 'unknown').toLowerCase()
-  if (state === 'valid' && hasRt !== false) {
+  if (hasRt === false) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--bg-pane)] px-2 py-0.5 text-[11px] text-[var(--text-muted)] whitespace-nowrap" title="账号未保存 Codex Refresh Token">
+        ⚡️ 缺少 RT
+      </span>
+    )
+  }
+  if (state === 'valid') {
     return (
       <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-400 font-medium whitespace-nowrap" title="Codex 直连鉴权通过，已就绪供反代或 Cockpit 唤醒">
         ⚡️ Codex 就绪
       </span>
     )
   }
-  if (state === 'invalid' || hasRt === false) {
+  if (state === 'invalid') {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[11px] text-red-400 font-medium whitespace-nowrap" title="Codex 接口鉴权失败 (401) 或缺少 Refresh Token，无法在 Cockpit 中直连">
+      <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[11px] text-red-400 font-medium whitespace-nowrap" title="Codex 接口鉴权失败 (401)，无法在 Cockpit 中直连">
         ⚡️ Codex 401
+      </span>
+    )
+  }
+  if (state === 'restricted') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-400 font-medium whitespace-nowrap" title="Codex 接口或工作区受限；这不能单独证明 AT 失效">
+        ⚡️ Codex 受限
       </span>
     )
   }
@@ -1844,7 +1865,7 @@ export default function Accounts() {
                 <th className="px-4 py-3 font-medium">账号</th>
                 <th className="px-4 py-3 font-medium">密码</th>
                 <th className="px-4 py-3 font-medium">Token 状态</th>
-                <th className="px-4 py-3 font-medium">401 状态</th>
+                <th className="px-4 py-3 font-medium">访问 / RT 状态</th>
                 <th className="px-4 py-3 font-medium">注册时间</th>
                 <th className="px-4 py-3 font-medium text-right">操作</th>
               </tr>
@@ -1895,7 +1916,22 @@ export default function Accounts() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-col gap-1 items-start">
-                        {statePill(account.refresh_token_status)}
+                        {statePill(account.access_token_status || account.refresh_token_status, 'AT')}
+                        {statePill(account.web_status || 'unknown', 'WEB', '未检查', '异常')}
+                        {statePill(account.refresh_token_status, 'RT', '缺失', '失效')}
+                        {account.recovery_state === 'missing_mailbox' ? (
+                          <span className="inline-flex rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-400" title="账号保留；补充验证邮箱或 TOTP 后可重试恢复">
+                            待补邮箱 / TOTP
+                          </span>
+                        ) : account.recovery_state === 'rt_refresh_unconfirmed' ? (
+                          <span className="inline-flex rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-400" title="RT 刷新请求未能确认；本次未执行密码登录">
+                            RT 待复查
+                          </span>
+                        ) : account.recovery_state === 'fresh_rt_missing' ? (
+                          <span className="inline-flex rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-400" title="AT 已恢复，但登录流程没有签发新 RT；Codex 凭据仍需处理">
+                            未签发新 RT
+                          </span>
+                        ) : null}
                         {codexPill(account.codex_status, account.has_refresh_token)}
                       </div>
                     </td>

@@ -974,9 +974,9 @@ def _check_newly_registered_chatgpt_account(
     overview = dict(extra.get("account_overview") or {})
     overview.update(
         {
-            "refresh_token_status": state,
+            "access_token_status": state,
             "valid": state == "valid",
-            "refresh_token_checked_at": _utcnow_iso(),
+            "access_token_checked_at": _utcnow_iso(),
             "refresh_token_check_message": message,
             "refresh_token_check_method": "access_token",
             "relogin_status": "unavailable" if state == "invalid" else "",
@@ -1830,6 +1830,12 @@ def _run_single_refresh_token_check(
             raise ValueError("账号不存在")
         account = build_platform_account(session, model)
     extra = dict(account.extra or {})
+    previous_overview = extra.get("account_overview")
+    previous_recovery_state = (
+        str(previous_overview.get("recovery_state") or "")
+        if isinstance(previous_overview, dict)
+        else ""
+    )
     access_token = str(
         extra.get("access_token")
         or extra.get("accessToken")
@@ -1847,7 +1853,11 @@ def _run_single_refresh_token_check(
     login_required = False
     login_attempted = False
     login_succeeded = False
-    recovery_state = ""
+    recovery_state = previous_recovery_state
+    rt_status_update: str | None = None
+    stored_refresh_token = str(
+        extra.get("refresh_token") or extra.get("refreshToken") or ""
+    ).strip()
     has_codex_token = bool(extra.get("refresh_token") or getattr(account, "refresh_token", None)) or (
         str(extra.get("client_id") or "") == "app_EMoamEEZ73f0CkXaXp7hrann"
     )
@@ -1868,31 +1878,26 @@ def _run_single_refresh_token_check(
     )
     state = str(result.get("state") or "unknown")
     initial_at_valid = (state == "valid")
-    has_refresh_token = bool(
-        str(extra.get("refresh_token") or extra.get("refreshToken") or getattr(account, "refresh_token", None) or "").strip()
-    )
-    has_login_credentials = bool(account.password) or bool(extra.get("totp_secret")) or bool(extra.get("provider_accounts"))
-    missing_codex_rt = (not has_refresh_token) and has_login_credentials
-
-    # This task is a saved-AT liveness check. A stored RT must never bypass
-    # the AT check: an explicit HTTP 401/403 always enters protocol login.
+    # Check the AT first. RT is only exercised as a recovery credential after
+    # the AT check explicitly reports invalid or missing.
     if verify_only:
         codex_status = str(result.get("codex_status") or ("valid" if result.get("codex_valid") else ("invalid" if state == "invalid" else "unknown")))
         web_status = str(result.get("web_status") or ("valid" if result.get("web_valid") else ("invalid" if state == "invalid" else "unknown")))
         _update_credential_check_status(
             account_id,
             summary_updates={
-                "refresh_token_status": state,
+                "access_token_status": state,
                 "valid": state == "valid",
                 "codex_status": codex_status,
                 "web_status": web_status,
-                "refresh_token_checked_at": _utcnow_iso(),
+                "access_token_checked_at": _utcnow_iso(),
                 "refresh_token_check_message": str(result.get("message") or ""),
                 "refresh_token_check_method": "browser_access_token",
                 "relogin_status": "",
+                "recovery_state": "" if state == "valid" else previous_recovery_state,
             },
         )
-        login_needed = (state in {"invalid", "missing"}) or missing_codex_rt
+        login_needed = state in {"invalid", "missing"}
         return {
             "account_id": account_id,
             "email": account.email,
@@ -1901,10 +1906,23 @@ def _run_single_refresh_token_check(
             "login_required": login_needed,
             "login_attempted": False,
             "login_succeeded": False,
-            "recovery_state": "",
+            "recovery_state": "" if state == "valid" else previous_recovery_state,
         }
 
-    needs_recovery = (state in {"invalid", "missing"}) or (missing_codex_rt and not verify_only)
+    supported_mailbox_providers = {"local_ms_pool", "api_mailbox", "domain_inbucket"}
+    has_recovery_source = bool(str(extra.get("totp_secret") or "").strip()) or any(
+        isinstance(item, dict)
+        and str(item.get("provider_type") or "mailbox") == "mailbox"
+        and str(item.get("provider_name") or "").strip().lower() in supported_mailbox_providers
+        and bool(str(item.get("login_identifier") or "").strip())
+        for item in list(extra.get("provider_accounts") or [])
+    )
+    if state == "valid":
+        recovery_state = ""
+    elif previous_recovery_state == "missing_mailbox" and has_recovery_source:
+        recovery_state = ""
+
+    needs_recovery = state in {"invalid", "missing"}
 
     if needs_recovery:
         login_required = True
@@ -1912,10 +1930,6 @@ def _run_single_refresh_token_check(
             if state in {"invalid", "missing"}:
                 event_callback(
                     f"{account.email}: {str(result.get('message') or 'AT 已失效')}，开始恢复"
-                )
-            else:
-                event_callback(
-                    f"{account.email}: 网页会话正常但缺少 Codex Refresh Token，自动启动补齐换证流程"
                 )
         if is_cancelled():
             return {
@@ -1931,9 +1945,10 @@ def _run_single_refresh_token_check(
 
         # 优先通道：如果账号保存了 Refresh Token，先尝试直接用 RT 刷新换取新 AT（规避网页端人机验证）
         recovery = None
+        protocol_recovery_without_rt = None
         refresh_token = str(
-            extra.get("refresh_token")
-            or extra.get("refreshToken")
+            stored_refresh_token
+            or getattr(account, "refresh_token", "")
             or ""
         ).strip()
         client_id = str(
@@ -1971,44 +1986,65 @@ def _run_single_refresh_token_check(
                                 break
 
             if rt_result.get("state") == "valid" and rt_result.get("tokens", {}).get("access_token"):
+                rt_status_update = "valid"
                 if event_callback:
                     event_callback(f"{account.email}: RT 刷新成功，直接换取到新 AT（已规避网页人机挑战）")
                 recovery = rt_result
                 recovery["recovery_method"] = "refresh_token"
+            elif rt_result.get("state") == "invalid":
+                rt_status_update = "invalid"
+                if event_callback:
+                    event_callback(f"{account.email}: RT 已被明确判定失效，改用账号凭据重新登录获取新 RT")
             else:
+                rt_status_update = "unknown"
                 rt_msg = str(rt_result.get("message") or "RT 刷新未通过")
                 if event_callback:
-                    event_callback(f"{account.email}: RT 刷新未通过 ({rt_msg})，回退到密码与 2FA 协议登录")
+                    event_callback(f"{account.email}: RT 刷新结果未确认 ({rt_msg})，暂不尝试密码登录")
+                recovery = {
+                    **rt_result,
+                    "state": "unknown",
+                    "recovery_state": "rt_refresh_unconfirmed",
+                }
 
         if recovery is None:
-            login_timeout = remaining(REFRESH_TOKEN_CHECK_ACCOUNT_TIMEOUT_SECONDS)
-            if login_timeout <= 0:
+            if previous_recovery_state == "missing_mailbox" and not has_recovery_source:
                 recovery = {
-                    "state": "invalid",
-                    "message": f"协议登录超过单账号总时限 ({int(timeout_seconds)}s)",
+                    "state": "missing_mailbox",
+                    "message": "上次恢复因缺少验证邮箱/TOTP而阻止；资料尚未补充，本次已先检查 RT",
                     "tokens": {},
                 }
             else:
-                login_attempted = True
-                recovery = login_chatgpt_with_protocol(
-                    account.email,
-                    account.password,
-                    provider_accounts=list(extra.get("provider_accounts") or []),
-                    totp_secret=str(extra.get("totp_secret") or "").strip(),
-                    proxy=login_proxy,
-                    timeout_seconds=login_timeout,
-                    cancel_check=is_cancelled,
-                    log_callback=event_callback,
-                    proxy_rotate_callback=login_proxy_rotate_callback,
-                )
+                login_timeout = remaining(REFRESH_TOKEN_CHECK_ACCOUNT_TIMEOUT_SECONDS)
+                if login_timeout <= 0:
+                    recovery = {
+                        "state": "invalid",
+                        "message": f"协议登录超过单账号总时限 ({int(timeout_seconds)}s)",
+                        "tokens": {},
+                    }
+                else:
+                    login_attempted = True
+                    recovery = login_chatgpt_with_protocol(
+                        account.email,
+                        account.password,
+                        provider_accounts=list(extra.get("provider_accounts") or []),
+                        totp_secret=str(extra.get("totp_secret") or "").strip(),
+                        proxy=login_proxy,
+                        timeout_seconds=login_timeout,
+                        cancel_check=is_cancelled,
+                        log_callback=event_callback,
+                        proxy_rotate_callback=login_proxy_rotate_callback,
+                    )
             recovery_message = str(recovery.get("message") or "")
             recovery_lower = recovery_message.lower()
             protocol_lacks_rt = (
                 recovery.get("state") == "valid"
                 and not bool(recovery.get("tokens", {}).get("refresh_token"))
             )
+            if protocol_lacks_rt:
+                protocol_recovery_without_rt = dict(recovery)
             if (
                 (recovery.get("state") not in {"valid", "banned", "missing_mailbox"} or protocol_lacks_rt)
+                and recovery.get("recovery_state") != "rt_refresh_unconfirmed"
                 and not is_cancelled()
                 and (callable(browser_login) or str(extra.get("totp_secret") or "").strip())
             ):
@@ -2035,6 +2071,7 @@ def _run_single_refresh_token_check(
                             f"{account.email}: {reason}，切换 Camoufox 执行密码 + 邮箱/TOTP 登录"
                         )
                     try:
+                        login_attempted = True
                         browser_recovery = active_browser_login(
                             account.email,
                             account.password,
@@ -2087,8 +2124,31 @@ def _run_single_refresh_token_check(
                                 standalone_pool.__exit__(None, None, None)
                             except Exception:
                                 pass
+            if (
+                protocol_recovery_without_rt is not None
+                and recovery.get("state") not in {"valid", "banned", "cancelled"}
+                and not is_cancelled()
+            ):
+                recovery = dict(protocol_recovery_without_rt)
+                recovery["recovery_state"] = "fresh_rt_missing"
+                recovery["message"] = (
+                    f"{str(recovery.get('message') or '协议登录已取得 AT')}；"
+                    f"Camoufox 未能补签 RT：{str(browser_recovery.get('message') or '未确认')}"
+                )
+            protocol_lacks_rt = (
+                recovery.get("state") == "valid"
+                and not bool(recovery.get("tokens", {}).get("refresh_token"))
+            )
+            if protocol_lacks_rt:
+                rt_status_update = "invalid" if stored_refresh_token else "missing"
+                recovery_state = "fresh_rt_missing"
+                recovery["recovery_state"] = recovery_state
+                recovery["message"] = (
+                    f"{str(recovery.get('message') or '账号登录成功')}；"
+                    "但未签发新的 Refresh Token，账号暂不能完成 RT 恢复"
+                )
         recovery.setdefault("message", "401 recovery login did not issue fresh credentials")
-        recovery_state = str(recovery.get("state") or "unknown")
+        recovery_state = str(recovery.get("recovery_state") or recovery.get("state") or "unknown")
         if recovery.get("state") == "valid":
             fresh_tokens = dict(recovery.get("tokens") or {})
             fresh_access_token = str(
@@ -2110,6 +2170,9 @@ def _run_single_refresh_token_check(
                     browser_fetch=browser_fetch,
                     verify_codex=has_codex_token,
                 )
+                for status_key in ("web_status", "codex_status", "web_valid", "codex_valid"):
+                    if status_key in fresh_check:
+                        recovery[status_key] = fresh_check[status_key]
                 fresh_state = str(fresh_check.get("state") or "unknown")
                 is_browser_token = (
                     recovery.get("recovery_method") == "browser_login"
@@ -2130,7 +2193,8 @@ def _run_single_refresh_token_check(
                         f"{str(recovery.get('message') or '')}；"
                         f"新 AT 二次验活未通过：{str(fresh_check.get('message') or '未确认')}"
                     ).strip("；")
-                    recovery["tokens"] = {}
+                    if recovery.get("recovery_method") != "refresh_token":
+                        recovery["tokens"] = {}
             else:
                 recovery_state = "fresh_at_missing"
                 recovery["state"] = "invalid"
@@ -2141,12 +2205,17 @@ def _run_single_refresh_token_check(
         if recovery.get("state") == "valid":
             result = recovery
             state = "valid"
+            if recovery.get("recovery_method") != "refresh_token":
+                if str((recovery.get("tokens") or {}).get("refresh_token") or "").strip():
+                    rt_status_update = "valid"
+                elif rt_status_update is None:
+                    rt_status_update = "missing"
             check_method = (
                 "refresh_token_verified"
                 if recovery.get("recovery_method") == "refresh_token"
                 else "protocol_login_verified"
             )
-            relogin_status = "recovered"
+            relogin_status = "partial" if recovery_state == "fresh_rt_missing" else "recovered"
             login_succeeded = True
             if event_callback:
                 method_name = "RT 刷新" if recovery.get("recovery_method") == "refresh_token" else "协议登录"
@@ -2163,13 +2232,11 @@ def _run_single_refresh_token_check(
                 "recovery_state": "cancelled",
             }
         elif recovery_state.startswith("fresh_at_"):
-            # A protocol login can succeed while the newly issued AT is
-            # already rejected or cannot be checked through the network.  Do
-            # not persist that token, and keep transport uncertainty separate
-            # from a confirmed 401 credential failure.
+            # Keep transport uncertainty separate from a confirmed invalid AT.
             fresh_state = recovery_state.removeprefix("fresh_at_")
             state = "unknown" if fresh_state == "unknown" else "invalid"
-            check_method = "protocol_login"
+            is_rt_refresh = recovery.get("recovery_method") == "refresh_token"
+            check_method = "refresh_token" if is_rt_refresh else "protocol_login"
             relogin_status = "failed"
             if event_callback:
                 event_callback(
@@ -2179,12 +2246,54 @@ def _run_single_refresh_token_check(
             result = {
                 **result,
                 "state": state,
+                **({"tokens": dict(recovery.get("tokens") or {})} if is_rt_refresh else {}),
                 "message": (
                     f"{str(result.get('message') or '')}；"
                     f"{str(recovery.get('message') or '新 AT 二次验活未确认')}"
                 ).strip("；"),
             }
-        elif recovery.get("state") in {"banned", "missing_mailbox"}:
+        elif recovery.get("recovery_state") == "rt_refresh_unconfirmed":
+            state = "invalid"
+            check_method = "access_token"
+            relogin_status = "blocked"
+            recovery_state = "rt_refresh_unconfirmed"
+            result = {
+                **result,
+                "state": state,
+                "message": (
+                    f"{str(result.get('message') or 'AT 已失效')}；"
+                    f"RT 刷新未确认，暂缓密码登录：{str(recovery.get('message') or '请求未确认')}"
+                ),
+            }
+        elif recovery.get("recovery_state") == "fresh_rt_missing":
+            state = "valid"
+            check_method = "protocol_login"
+            relogin_status = "partial"
+            recovery_state = "fresh_rt_missing"
+            result = {
+                **result,
+                "state": state,
+                "tokens": dict(recovery.get("tokens") or {}),
+                "message": str(recovery.get("message") or "新 Refresh Token 未签发"),
+            }
+        elif recovery.get("state") == "missing_mailbox":
+            state = "invalid"
+            check_method = "access_token"
+            relogin_status = "blocked"
+            recovery_state = "missing_mailbox"
+            if event_callback:
+                event_callback(
+                    f"{account.email}: 缺少可复用的验证邮箱/TOTP，账号与凭据保留，等待补充资料"
+                )
+            result = {
+                **result,
+                "state": state,
+                "message": (
+                    f"{str(result.get('message') or 'AT 已失效')}；"
+                    f"无法恢复，账号已保留：{str(recovery.get('message') or '缺少验证邮箱/TOTP')}"
+                ),
+            }
+        elif recovery.get("state") == "banned":
             confirmed_ban_code = str(
                 recovery.get("confirmed_ban_code") or ""
             ).strip().lower()
@@ -2221,11 +2330,7 @@ def _run_single_refresh_token_check(
                         "login_succeeded": False,
                         "recovery_state": "cancelled",
                     }
-                reason = (
-                    f"确认封禁 {confirmed_ban_code}"
-                    if recovery.get("state") == "banned"
-                    else "缺少可复用邮箱"
-                )
+                reason = f"确认封禁 {confirmed_ban_code}"
                 evidence = str(recovery.get("message") or "").strip()
                 if event_callback:
                     event_callback(
@@ -2237,11 +2342,7 @@ def _run_single_refresh_token_check(
                     email=account.email,
                     message=str(
                         evidence
-                        or (
-                            "账号缺少可复用邮箱，无法恢复"
-                            if recovery.get("state") == "missing_mailbox"
-                            else f"重新登录时明确返回 {confirmed_ban_code}"
-                        )
+                        or f"重新登录时明确返回 {confirmed_ban_code}"
                     ),
                 )
                 return {
@@ -2312,9 +2413,13 @@ def _run_single_refresh_token_check(
     final_codex_status = str(
         result.get("codex_status")
         or (
-            "valid"
-            if state == "valid" and bool(tokens.get("refresh_token") or extra.get("refresh_token"))
-            else ("invalid" if state == "invalid" else "unknown")
+            "invalid"
+            if rt_status_update == "invalid"
+            else (
+                "valid"
+                if state == "valid" and bool(tokens.get("refresh_token") or extra.get("refresh_token"))
+                else ("invalid" if state == "invalid" else "unknown")
+            )
         )
     )
     final_web_status = str(
@@ -2324,14 +2429,23 @@ def _run_single_refresh_token_check(
     _update_credential_check_status(
         account_id,
         summary_updates={
-            "refresh_token_status": state,
+            "access_token_status": state,
             "valid": state == "valid",
             "codex_status": final_codex_status,
             "web_status": final_web_status,
-            "refresh_token_checked_at": _utcnow_iso(),
+            "access_token_checked_at": _utcnow_iso(),
             "refresh_token_check_message": str(result.get("message") or ""),
             "refresh_token_check_method": check_method,
             "relogin_status": relogin_status,
+            "recovery_state": recovery_state,
+            **(
+                {
+                    "refresh_token_status": rt_status_update,
+                    "refresh_token_status_updated_at": _utcnow_iso(),
+                }
+                if rt_status_update is not None
+                else {}
+            ),
         },
         credential_updates=tokens or None,
     )
@@ -2402,8 +2516,7 @@ def _resolve_refresh_login_proxy(
                 f"协议登录代理节点不可访问 ChatGPT：{normalized_node}（{detail}）"
             )
         logger.log(
-            f"协议登录/工作区代理节点：{normalized_node}，预检通过（{detail}）；"
-            "AT 主验活仍直连 api.openai.com/v1/me",
+            f"协议登录/工作区代理节点：{normalized_node}，预检通过（{detail}）",
             event_type="progress",
         )
         return proxy
@@ -2414,8 +2527,7 @@ def _resolve_refresh_login_proxy(
         fallback_reachable, fallback_detail = _probe_chatgpt_login_route(fallback_proxy)
         if fallback_reachable:
             logger.log(
-                f"协议登录/工作区线路：当前 Mihomo 节点预检通过（{fallback_detail}）；"
-                "AT 主验活直连 api.openai.com/v1/me",
+                f"协议登录/工作区线路：当前 Mihomo 节点预检通过（{fallback_detail}）",
                 event_type="progress",
             )
             return fallback_proxy
@@ -2444,8 +2556,7 @@ def _resolve_refresh_login_proxy(
                 if candidate_reachable:
                     logger.log(
                         f"当前 Mihomo 节点不可用，已自动切换到健康节点："
-                        f"{candidate_name}（{candidate_detail}）；"
-                        "AT 主验活直连 api.openai.com/v1/me",
+                        f"{candidate_name}（{candidate_detail}）",
                         level="warning",
                         event_type="progress",
                     )
@@ -2462,8 +2573,7 @@ def _resolve_refresh_login_proxy(
             fallback_detail = retry_detail or fallback_detail
             if fallback_reachable:
                 logger.log(
-                    f"协议登录/工作区线路：Mihomo 重试预检通过（{fallback_detail}）；"
-                    "AT 主验活直连 api.openai.com/v1/me",
+                    f"协议登录/工作区线路：Mihomo 重试预检通过（{fallback_detail}）",
                     event_type="progress",
                 )
                 return fallback_proxy
@@ -2479,8 +2589,7 @@ def _resolve_refresh_login_proxy(
             )
             return fallback_proxy
         logger.log(
-            f"协议登录/工作区线路：直连预检通过（{direct_detail}）；"
-            "AT 主验活直连 api.openai.com/v1/me",
+            f"协议登录/工作区线路：直连预检通过（{direct_detail}）",
             event_type="progress",
         )
         return None
@@ -2581,8 +2690,9 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
     logger.log(
         f"401 验活配置：总计 {total}，AT 检查并发 {concurrency}，"
         f"协议登录并发 {login_concurrency}，"
-        f"单账号最长 {account_timeout}s；AT 主验活直连 api.openai.com/v1/me，"
-        "通过后再检查 ChatGPT 工作区",
+        f"单账号最长 {account_timeout}s；"
+        f"AT 检查请求模式：{'Camoufox 浏览器' if browser_mode else '协议直连'}，"
+        f"工作区候选出口：{login_proxy or '直连'}",
         event_type="progress",
     )
 
@@ -2672,12 +2782,21 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
             )
             _browser_session.__enter__()
             browser_fetch = getattr(_browser_session, "browser_fetch", None)
+            logger.log(
+                f"Camoufox 验活实际网络出口：{login_proxy or '直连'}（/v1/me、工作区和 Codex 请求共用该出口）",
+                event_type="progress",
+            )
             # Keep browser-first verification compatible with older pool
             # implementations and test doubles that do not provide the
             # optional password+TOTP fallback callback.
             browser_login = getattr(_browser_session, "browser_login", None)
         except Exception as exc:
-            logger.log(f"浏览器验活初始化失败，回退协议直连: {exc}", level="warning", event_type="progress")
+            logger.log(
+                f"Camoufox 验活池初始化失败，降级为协议请求：/v1/me 直连，工作区请求出口 {login_proxy or '直连'}；"
+                f"若需密码恢复，仍可能单独启动 Camoufox；原因：{exc}",
+                level="warning",
+                event_type="progress",
+            )
             browser_fetch = None
 
     # Phase 1: verify every AT through Camoufox with the requested concurrency.
@@ -2793,7 +2912,7 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
                             results["login_attempted"] += 1
                         if result.get("login_attempted") and not result.get("login_succeeded"):
                             recovery_state = str(result.get("recovery_state") or "")
-                            if recovery_state not in {"banned", "missing_mailbox", "cancelled"}:
+                            if recovery_state not in {"banned", "missing_mailbox", "cancelled", "rt_refresh_unconfirmed"}:
                                 results["login_failed"] += 1
                         if result.get("login_succeeded"):
                             results["login_succeeded"] += 1
@@ -2879,7 +2998,7 @@ def _execute_refresh_token_check_task(payload: dict[str, Any], logger: TaskLogge
                                     recovered_emails.append(str(result.get("email")))
                         recovery_state = str(result.get("recovery_state") or "")
                         if result.get("login_attempted") and not result.get("login_succeeded"):
-                            if recovery_state not in {"banned", "missing_mailbox", "cancelled"}:
+                            if recovery_state not in {"banned", "missing_mailbox", "cancelled", "rt_refresh_unconfirmed"}:
                                 results["login_failed"] += 1
                         if recovery_state == "banned":
                             results["banned"] += 1

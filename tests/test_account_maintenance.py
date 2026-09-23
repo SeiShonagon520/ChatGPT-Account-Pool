@@ -41,7 +41,9 @@ def test_account_list_is_server_paginated_and_redacts_credentials(client):
         "email",
         "password",
         "totp_secret",
+        "access_token_status",
         "refresh_token_status",
+        "recovery_state",
         "codex_status",
         "web_status",
         "has_refresh_token",
@@ -177,6 +179,7 @@ def test_refresh_check_always_checks_access_token_even_when_rt_exists(monkeypatc
     assert result["state"] == "valid"
     assert result["login_required"] is False
     assert saved is not None
+    assert saved["overview"]["access_token_status"] == "valid"
     assert saved["overview"]["refresh_token_status"] == "valid"
     assert saved["overview"]["refresh_token_check_method"] == "access_token"
     credentials = {item["key"]: item["value"] for item in saved["credentials"]}
@@ -202,6 +205,7 @@ def test_refresh_check_checks_access_token_without_rt(monkeypatch):
 
     assert result["state"] == "valid"
     assert saved is not None
+    assert saved["overview"]["access_token_status"] == "valid"
     assert saved["overview"]["refresh_token_status"] == "valid"
     assert saved["overview"]["refresh_token_check_method"] == "access_token"
 
@@ -235,14 +239,15 @@ def test_new_registration_access_token_check_is_persisted_as_valid(monkeypatch):
 
     assert result["state"] == "valid"
     assert saved is not None
-    assert saved["overview"]["refresh_token_status"] == "valid"
+    assert saved["overview"]["access_token_status"] == "valid"
+    assert saved["overview"]["refresh_token_status"] == "missing"
     assert saved["overview"]["refresh_token_check_method"] == "access_token"
     assert saved["overview"]["refresh_token_check_message"] == "fresh-access works"
     assert saved["overview"]["refresh_token_checked_at"]
     assert captured["account_id"] == "acct-123"
 
 
-def test_access_token_check_treats_403_as_invalid(monkeypatch):
+def test_access_token_check_treats_unclassified_403_as_unknown(monkeypatch):
     from platforms.chatgpt import credential_checks
 
     calls = []
@@ -260,8 +265,8 @@ def test_access_token_check_treats_403_as_invalid(monkeypatch):
     result = credential_checks.check_chatgpt_access_token("fresh-access")
 
     assert result == {
-        "state": "invalid",
-        "message": "access token 返回 HTTP 403（api.openai.com/v1/me）",
+        "state": "unknown",
+        "message": "HTTP 403，未确认是凭据失效（api.openai.com/v1/me）",
     }
     assert calls == ["https://api.openai.com/v1/me"]
 
@@ -366,7 +371,7 @@ def test_access_token_check_keeps_api_alive_when_workspace_check_is_blocked(monk
     result = credential_checks.check_chatgpt_access_token("fresh-access")
 
     assert result["state"] == "valid"
-    assert "工作区检查未确认" in result["message"]
+    assert "工作区状态 unknown" in result["message"]
     assert calls == [
         "https://api.openai.com/v1/me",
         "https://chatgpt.com/backend-api/me",
@@ -398,13 +403,9 @@ def test_access_token_check_rejects_deactivated_workspace(monkeypatch):
 
     result = credential_checks.check_chatgpt_access_token("fresh-access")
 
-    assert result == {
-        "state": "invalid",
-        "message": (
-            "工作区返回 HTTP 402（chatgpt.com/backend-api/me，"
-            "deactivated_workspace）"
-        ),
-    }
+    assert result["state"] == "valid"
+    assert result["web_status"] == "restricted"
+    assert "deactivated_workspace" in result["message"]
 
 
 def test_access_token_check_rejects_locally_expired_jwt(monkeypatch):
@@ -431,7 +432,7 @@ def test_access_token_check_rejects_locally_expired_jwt(monkeypatch):
     }
 
 
-def test_refresh_token_check_treats_http_403_as_invalid(monkeypatch):
+def test_refresh_token_check_treats_unclassified_http_403_as_unknown(monkeypatch):
     from platforms.chatgpt import credential_checks
 
     class Response:
@@ -450,7 +451,11 @@ def test_refresh_token_check_treats_http_403_as_invalid(monkeypatch):
 
     result = credential_checks.refresh_chatgpt_tokens("stale-refresh")
 
-    assert result == {"state": "invalid", "message": "RT 已失效", "tokens": {}}
+    assert result == {
+        "state": "unknown",
+        "message": "RT 校验未确认（HTTP 403）",
+        "tokens": {},
+    }
 
 
 def test_access_token_check_stops_immediately_on_401(monkeypatch):
@@ -515,6 +520,7 @@ def test_refresh_check_recovers_invalid_access_token_with_protocol_login(monkeyp
     assert result["login_succeeded"] is True
     assert result["recovery_state"] == "valid"
     assert saved is not None
+    assert saved["overview"]["access_token_status"] == "valid"
     assert saved["overview"]["refresh_token_status"] == "valid"
     assert saved["overview"]["refresh_token_check_method"] == "protocol_login_verified"
     credentials = {item["key"]: item["value"] for item in saved["credentials"]}
@@ -562,6 +568,7 @@ def test_refresh_check_prioritizes_rt_refresh_over_protocol_login_on_401(monkeyp
     assert result["login_attempted"] is True
     assert result["login_succeeded"] is True
     assert saved is not None
+    assert saved["overview"]["access_token_status"] == "valid"
     assert saved["overview"]["refresh_token_status"] == "valid"
     assert saved["overview"]["refresh_token_check_method"] == "refresh_token_verified"
     credentials = {item["key"]: item["value"] for item in saved["credentials"]}
@@ -662,6 +669,14 @@ def test_refresh_check_deletes_after_relogin_reports_ban(monkeypatch):
         },
     )
     monkeypatch.setattr(
+        "platforms.chatgpt.credential_checks.refresh_chatgpt_tokens",
+        lambda *_args, **_kwargs: {
+            "state": "invalid",
+            "message": "RT 已失效",
+            "tokens": {},
+        },
+    )
+    monkeypatch.setattr(
         "platforms.chatgpt.credential_checks.login_chatgpt_with_protocol",
         lambda *_args, **_kwargs: {
             "state": "banned",
@@ -693,6 +708,14 @@ def test_refresh_check_keeps_unconfirmed_ban_result(monkeypatch):
         },
     )
     monkeypatch.setattr(
+        "platforms.chatgpt.credential_checks.refresh_chatgpt_tokens",
+        lambda *_args, **_kwargs: {
+            "state": "invalid",
+            "message": "RT 已失效",
+            "tokens": {},
+        },
+    )
+    monkeypatch.setattr(
         "platforms.chatgpt.credential_checks.login_chatgpt_with_protocol",
         lambda *_args, **_kwargs: {
             "state": "banned",
@@ -708,7 +731,7 @@ def test_refresh_check_keeps_unconfirmed_ban_result(monkeypatch):
     assert AccountsService().get_account(account_id) is not None
 
 
-def test_refresh_check_deletes_when_relogin_has_no_reusable_mailbox(monkeypatch):
+def test_refresh_check_keeps_and_marks_account_when_relogin_has_no_mailbox(monkeypatch):
     from application.tasks import _run_single_refresh_token_check
     from application.accounts import AccountsService
 
@@ -723,6 +746,15 @@ def test_refresh_check_deletes_when_relogin_has_no_reusable_mailbox(monkeypatch)
             "message": "access token 返回 HTTP 401（me）",
         },
     )
+    refresh_calls = []
+    monkeypatch.setattr(
+        "platforms.chatgpt.credential_checks.refresh_chatgpt_tokens",
+        lambda *_args, **_kwargs: refresh_calls.append(True) or {
+            "state": "invalid",
+            "message": "RT 已失效",
+            "tokens": {},
+        },
+    )
     monkeypatch.setattr(
         "platforms.chatgpt.credential_checks.login_chatgpt_with_protocol",
         lambda *_args, **_kwargs: {
@@ -734,8 +766,12 @@ def test_refresh_check_deletes_when_relogin_has_no_reusable_mailbox(monkeypatch)
 
     result = _run_single_refresh_token_check(account_id)
 
-    assert result["state"] == "deleted"
-    assert AccountsService().get_account(account_id) is None
+    assert result["state"] == "invalid"
+    assert result["recovery_state"] == "missing_mailbox"
+    assert refresh_calls == [True]
+    saved = AccountsService().get_account(account_id)
+    assert saved is not None
+    assert saved["overview"]["recovery_state"] == "missing_mailbox"
 
 
 def test_refresh_check_keeps_account_when_relogin_cannot_issue_credentials(monkeypatch):

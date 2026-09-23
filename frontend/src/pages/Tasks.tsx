@@ -546,7 +546,7 @@ function TaskDetailModal({
                   </div>
                 </div>
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-3 text-center">
-                  <div className="text-xs text-[var(--text-muted)]">尝试重新登录</div>
+                  <div className="text-xs text-[var(--text-muted)]">尝试恢复凭据</div>
                   <div className="mt-1 text-lg font-bold text-[var(--text-primary)]">
                     {taskData.login_attempted || 0}
                   </div>
