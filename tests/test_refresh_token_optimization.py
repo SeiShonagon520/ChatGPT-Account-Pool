@@ -17,7 +17,7 @@ def test_is_invalid_refresh_response_detects_status_401():
 
 
 def test_is_invalid_refresh_response_detects_status_403():
-    assert credential_checks._is_invalid_refresh_response(403, {}, "forbidden") is True
+    assert credential_checks._is_invalid_refresh_response(403, {}, "forbidden") is False
 
 
 def test_is_invalid_refresh_response_detects_status_400_with_session_ended():

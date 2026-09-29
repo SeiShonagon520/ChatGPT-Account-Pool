@@ -739,9 +739,10 @@ class AccountsService:
                 access_token_status = str(overview.get("refresh_token_status") or "unknown")
             else:
                 access_token_status = "not_checked" if has_access_token else "missing"
+        rt_verified_at = overview.get("refresh_token_status_updated_at") or overview.get("refresh_token_checked_at")
         rt_status = (
             str(overview.get("refresh_token_status") or "unknown")
-            if has_refresh_token and overview.get("refresh_token_status_updated_at")
+            if has_refresh_token and rt_verified_at
             else ("not_checked" if has_refresh_token else "missing")
         )
         codex_status = str(overview.get("codex_status") or "unknown")

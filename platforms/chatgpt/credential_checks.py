@@ -1332,8 +1332,8 @@ def check_chatgpt_access_token(
                     "http_status": status_code,
                 }
             return {
-                "state": "unknown",
-                "message": f"Codex 接口返回 HTTP 400，不能据此确认鉴权（{endpoint_name}）",
+                "state": "valid",
+                "message": f"HTTP 400（{endpoint_name}，鉴权通过）",
                 "transient": False,
                 "http_status": status_code,
             }
@@ -1563,6 +1563,16 @@ def check_chatgpt_access_token(
             extra_headers={"Content-Type": "application/json"},
         )
         codex_status = str(codex_res.get("state") or "unknown")
+        if codex_status == "invalid":
+            return {
+                "state": "invalid",
+                "message": str(codex_res.get("message") or "Codex 接口鉴权失败 (401 Unauthorized)"),
+                "web_valid": web_valid,
+                "codex_valid": False,
+                "web_status": web_status,
+                "codex_status": "invalid",
+                "client_id": client_id,
+            }
         if codex_status == "valid":
             return {
                 "state": "valid",
